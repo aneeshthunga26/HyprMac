@@ -35,6 +35,7 @@ enum Action: Equatable {
     case restoreLayout
     case retileAll
     case showWindowRules
+    case cycleLayout(Int)
 }
 ```
 
@@ -289,6 +290,32 @@ shake and no rule is saved. The same precedence answers at every place that
 asked about Never tile: admission (`WindowDiscoveryService.admitNew`), startup
 and Retile All (`FloatingWindowController.autoFloatReason`), a move to a
 workspace and the scratchpad (`isNeverTile`, `floatRule(for:)`).
+
+**Cycling layouts**, `cycleLayout(Int)`, default Hypr+Space (`+1`, next)
+and Hypr+Shift+Space (`-1`, previous). It steps the focused workspace, or the
+one on the cursor's monitor when no tile has focus, through the layouts
+enabled for that workspace (Settings → Layout → Layouts), wrapping. While
+the Hypr key stays down, each press only moves a preview (the HUD and the
+menu bar icon); releasing Hypr lays the last one out. A layout a window won't
+fit into is refused then, and the workspace keeps the one it had. A cycle that
+does not come with Hypr held, such as `hyprmac://action/cycleLayout`, applies
+at once. It does nothing while the scratchpad is up and ignores key repeat:
+
+```json
+{"cycleLayout":{"_0":1}}
+{"action":{"cycleLayout":{"_0":-1}},"keyCode":49,"modifiers":3}
+```
+
+The layouts themselves are not keybind data. They live in `config.json` under
+`enabledLayouts`, `defaultLayout`, `workspaceLayouts` (keyed `"1"`…`"10"`,
+each `{"enabled": [...], "defaultLayout": ...}`), `layoutMasterFraction`,
+`layoutMasterCount` and `showLayoutInMenuBar`. The layout names are the
+`TilingLayout` raw values: `dwindle`, `tile`, `tileLeft`, `tileBottom`,
+`tileTop`, `fair`, `fairHorizontal`, `spiral`, `columns`, `rows`,
+`centeredMaster`, `corner`, `monocle`. A name a build does not know is
+dropped on load. The layout each workspace is in right now is runtime state,
+kept per Mac in UserDefaults (`workspaceActiveLayouts`,
+`workspaceMasterFractions`), so cycling never writes `config.json`.
 
 **The window rules overlay**, `showWindowRules`, default Hypr+I:
 

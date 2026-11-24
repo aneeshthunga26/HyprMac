@@ -168,7 +168,8 @@ live for the entire app lifetime. The process-wide singletons are
 | `TiledDragFeedbackCoordinator` | Holds a degraded drop's error until a later layout settles it. |
 | `FloatingDimDragTracker` | Keeps the dim's carve and the floater outline on a floater while it is dragged. `FloaterDragFollow` decides which of the two follow. Reads the floater's frame from the window list (`WindowStacking.bounds(of:)`), not from AX. |
 | `DockAffordance` | What an outside app activation does when none of that app's windows are on screen. |
-| `WorkspaceManager` | HyprMac's ten virtual workspaces, screen↔workspace mapping, home-screen affinity. |
+| `WorkspaceManager` | HyprMac's ten virtual workspaces, screen↔workspace mapping, home-screen affinity. In the macOS Desktops mode (`usesMacDesktops`) the shown workspace comes from the Spaces (`syncWithMacDesktops`) and only the scratchpad parks (`docs/desktop-switching-notes.md`). |
+| `NativeDesktopMap`, `DesktopShortcut` | The macOS Desktops mode: which Desktop each workspace is, read from SkyLight, and the "Switch to Desktop N" shortcut a switch posts. |
 | `TilingEngine` | One BSP tree per `(workspace, screen)`, verified sizing, smart insert, keyboard swap, and candidate drag commit. |
 | `FloatingWindowController` | Float / tile toggle, cycle, raise-behind (with `RaiseBehindThrottle`), the click re-raise, auto-float predicate, and the live re-apply of a float or tile rule change (`applyRuleChange`). |
 | `FloatingRuleCommands` | The rule edits behind the window rules overlay (Hypr+I), the menu bar's "Focused window" section and the failed-tile prompt. Each acts on the window id it was opened for. Edits the config only; `WindowManager` watches the rule lists and re-applies (see "Float and tile rules"). |

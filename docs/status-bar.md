@@ -59,7 +59,7 @@ comes back with the next write after tiling resumes.
   ],
   "workspaces": [
     { "id": 1, "monitor": "DELL U3225QE", "visible": false, "windows": [] },
-    { "id": 4, "name": "term", "monitor": "DELL U3225QE", "visible": true,
+    { "id": 4, "name": "term", "monitor": "DELL U3225QE", "visible": true, "layout": "tile",
       "windows": [
         { "id": 123, "app": "Ghostty", "bundleID": "com.mitchellh.ghostty",
           "floating": false, "focused": true }
@@ -71,7 +71,9 @@ comes back with the next write after tiling resumes.
 ```
 
 - `workspaces` lists every workspace 1–10 with its home monitor, empty ones
-  included. `name` is there only when the workspace has one.
+  included. `name` is there only when the workspace has one. `layout` is the
+  layout it shows (`dwindle`, `tile`, `fair`, `monocle`, …; the names are in
+  `docs/keybinds-and-actions.md`), and a layout change writes the file too.
 - Windows are those on screen or parked on a hidden workspace. A window that
   closed while its app keeps running, a minimized window and a hidden app's
   windows are left out, as in the menu bar.

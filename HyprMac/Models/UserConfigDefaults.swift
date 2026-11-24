@@ -80,6 +80,14 @@ enum UserConfigDefaults {
     // usable area.
     static let scratchpadRegionInset: CGFloat = 0.06
     static let restoreLayoutOnLaunch: Bool = false
+    // the layouts the cycle key steps through on every workspace without
+    // its own list, and the one each starts in
+    static let enabledLayouts: [TilingLayout] = TilingLayout.defaultEnabled
+    static let defaultLayout: TilingLayout = .dwindle
+    static let layoutMasterFraction: CGFloat = TileArrangement.defaultMasterFraction
+    static let layoutMasterCount: Int = TileArrangement.defaultMasterCount
+    // the layout symbol after the workspace glyphs in the menu bar
+    static let showLayoutInMenuBar: Bool = true
     // focusBorderColorHex / floatingBorderColorHex are nil by default —
     // resolvedFocusBorderColor / resolvedFloatingBorderColor use brand cyan
     // and magenta when nil.

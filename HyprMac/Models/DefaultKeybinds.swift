@@ -94,6 +94,13 @@ extension Keybind {
         binds.append(Keybind(keyCode: UInt16(kVK_ANSI_T), modifiers: .hypr,
                              action: .toggleFloating))
 
+        // hypr + space / hypr + shift + space: next / previous layout on the
+        // focused workspace, as awesome's mod + space
+        binds.append(Keybind(keyCode: UInt16(kVK_Space), modifiers: .hypr,
+                             action: .cycleLayout(1)))
+        binds.append(Keybind(keyCode: UInt16(kVK_Space), modifiers: [.hypr, .shift],
+                             action: .cycleLayout(-1)))
+
         // hypr + j: toggle split direction (transpose)
         binds.append(Keybind(keyCode: UInt16(kVK_ANSI_J), modifiers: .hypr,
                              action: .toggleSplit))

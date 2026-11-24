@@ -50,6 +50,7 @@ final class KeybindEditorViewModel: ObservableObject {
         case restoreLayout          = "Restore Layout"
         case retileAll              = "Retile All Spaces"
         case showWindowRules        = "Show Window Rules"
+        case cycleLayout            = "Cycle Layout"
     }
 
     /// nil unless the command action is selected and its line is unusable
@@ -106,6 +107,7 @@ final class KeybindEditorViewModel: ObservableObject {
         case .restoreLayout:                 selectedAction = .restoreLayout
         case .retileAll:                     selectedAction = .retileAll
         case .showWindowRules:               selectedAction = .showWindowRules
+        case .cycleLayout(let d):            selectedAction = .cycleLayout;            workspaceParam = d
         }
     }
 
@@ -145,6 +147,7 @@ final class KeybindEditorViewModel: ObservableObject {
         case .restoreLayout:          action = .restoreLayout
         case .retileAll:              action = .retileAll
         case .showWindowRules:        action = .showWindowRules
+        case .cycleLayout:            action = .cycleLayout(workspaceParam < 0 ? -1 : 1)
         }
         return Keybind(keyCode: recordedKeyCode, modifiers: mods, action: action)
     }

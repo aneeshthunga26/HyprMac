@@ -990,6 +990,15 @@ struct FrameSizingAttempt {
     /// places overlap or sit gap-less is a fact about the originals, not
     /// about the rollback. Overlaps are collected on the result and the
     /// per-window match still decides.
+    /// Two targets with one frame: the layout stacked them on purpose
+    /// (monocle), so neither the overlap nor the gap between them is a fault.
+    /// Only the same frame counts. Targets that merely overlap are still a
+    /// broken layout, and tiled layouts never ask for either.
+    static func targetsShareAFrame(_ a: CGRect, _ b: CGRect, slack: CGFloat) -> Bool {
+        abs(a.minX - b.minX) <= slack && abs(a.minY - b.minY) <= slack
+            && abs(a.width - b.width) <= slack && abs(a.height - b.height) <= slack
+    }
+
     func validateFrames(targets: [Target], actualFrames: [CGWindowID: CGRect],
                         usableFrame: CGRect, gap: CGFloat) -> Result {
         let slack = configuration.aggregateSafetySlack
@@ -1012,6 +1021,11 @@ struct FrameSizingAttempt {
             for j in targets.indices where j > i {
                 let first = targets[i]
                 let second = targets[j]
+                // a layout that stacks windows on one frame (monocle) asks
+                // for the overlap; each window still had to match its own
+                // target. a rollback keeps recording overlapping originals
+                if !configuration.correspondenceOnly,
+                   Self.targetsShareAFrame(first.frame, second.frame, slack: slack) { continue }
                 guard let actualA = actualFrames[first.windowID], let actualB = actualFrames[second.windowID] else { continue }
                 if actualA.intersection(actualB).width > slack && actualA.intersection(actualB).height > slack {
                     // a rollback put each window back where it was. two

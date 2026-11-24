@@ -270,6 +270,35 @@ class TilingEngine {
         didSet { if minSlotDimension != oldValue { beginLayoutGeneration() } }
     }
 
+    /// The layout each regular workspace uses. `WindowManager` points it at
+    /// the config and `WorkspaceLayoutState`; the scratchpad layer is always
+    /// dwindle. Read whenever a tree is stamped (`stamp(_:for:)`).
+    var arrangementSource: (Int) -> TileArrangement = { _ in .dwindle }
+
+    /// The arrangement `key`'s tree lays out with.
+    private func arrangement(for key: TilingKey) -> TileArrangement {
+        key.workspace == Self.scratchpadWorkspace ? .dwindle : arrangementSource(key.workspace)
+    }
+
+    /// Give `tree` its workspace's arrangement. Entering an order-driven
+    /// layout rebalances the tree, so its depth fits the split budget
+    /// whatever shape dwindle left. Returns whether anything changed.
+    @discardableResult
+    private func stamp(_ tree: BSPTree, for key: TilingKey) -> Bool {
+        let next = arrangement(for: key)
+        guard tree.arrangement != next else { return false }
+        let enteringOrdered = tree.arrangement.layout.isTreeDriven && !next.layout.isTreeDriven
+        tree.arrangement = next
+        if enteringOrdered { tree.rebalance() }
+        return true
+    }
+
+    /// The arrangement the live tree for `(workspace, screen)` last laid
+    /// out with, or nil when there is no tree.
+    func liveArrangement(forWorkspace workspace: Int, screen: NSScreen) -> TileArrangement? {
+        trees[TilingKey(workspace: workspace, screen: screen)]?.arrangement
+    }
+
     private let minSizes = MinSizeMemory()
     /// generation at which each window last had an `.observed` minimum
     /// recorded. Only the bypass reads it.
@@ -503,6 +532,7 @@ class TilingEngine {
     private func tree(for key: TilingKey) -> BSPTree {
         if let existing = trees[key] { return existing }
         let tree = BSPTree()
+        tree.arrangement = arrangement(for: key)
         trees[key] = tree
         return tree
     }
@@ -1375,6 +1405,7 @@ class TilingEngine {
         // a split toggle, a force insert) was given no list. it holds what
         // the source names in the tree, or it reads a hung app's window and
         // fails, or writes to one on another space
+        stamp(tree, for: key)
         let treeOnly = passHeldIDs == nil
         if treeOnly {
             passHeldIDs = heldWindowIDsSource().intersection(tree.allWindows.map(\.windowID))
@@ -2374,6 +2405,8 @@ class TilingEngine {
         let key = TilingKey(workspace: workspace, screen: screen)
         let t = candidate ?? tree(for: key)
         let rect = layoutRect(for: key, screen: screen)
+        // the fit checks below judge the layout the pass will lay out
+        stamp(t, for: key)
 
         // a screen rotated in place keeps its key, so the migration's drop
         // of the axes pinned for the other orientation never ran: the pins
@@ -2486,6 +2519,11 @@ class TilingEngine {
         // to go with any window that opened or came back
         if !insertedWindows.isEmpty { t.root.resetSplitRatios() }
         t.root.applySavedRatios()
+        // a restored slot splits beside its old neighbour, which can deepen
+        // an order-driven tree past the budget its fit check assumed
+        if !t.arrangement.layout.isTreeDriven, removed > 0 || !insertedWindows.isEmpty {
+            t.rebalance()
+        }
 
         return TileMembershipResult(key: key, tree: t, rect: rect,
                                     insertedWindows: insertedWindows,
@@ -3302,6 +3340,8 @@ class TilingEngine {
     func toggleSplit(_ window: HyprWindow, onWorkspace workspace: Int, screen: NSScreen) {
         let key = TilingKey(workspace: workspace, screen: screen)
         let t = tree(for: key)
+        // only dwindle has splits to flip
+        guard t.arrangement.layout.isTreeDriven else { return }
         let rect = layoutRect(for: key, screen: screen)
         let snapshot = t.snapshot()
         let generation = beginLayoutGeneration()
@@ -3323,6 +3363,10 @@ class TilingEngine {
         let rect = layoutRect(for: key, screen: screen)
 
         guard let leaf = t.root.find(window) else { return }
+        guard t.arrangement.layout.isTreeDriven else {
+            resizeMaster(t, direction: direction, key: key, screen: screen)
+            return
+        }
         let snapshot = t.snapshot()
         let generation = beginLayoutGeneration()
 
@@ -3360,6 +3404,88 @@ class TilingEngine {
             if case .accepted = outcome { return }
             if layoutGeneration == generation { t.restore(snapshot) }
         }
+    }
+
+    /// Records a workspace's new master fraction where `arrangementSource`
+    /// reads it (`WorkspaceLayoutState`), and hands back how to undo that
+    /// record for a step that does not verify.
+    var setMasterFraction: (Int, CGFloat) -> (() -> Void) = { _, _ in {} }
+
+    /// The master fraction one keyboard step in `direction` gives, or nil
+    /// when the arrow does not run across the master boundary. The boundary
+    /// follows the arrow, as dwindle's does: right grows a left master and
+    /// shrinks a right one.
+    static func steppedMasterFraction(_ arrangement: TileArrangement, direction: Direction) -> CGFloat? {
+        let step = TileArrangement.masterStep
+        let horizontal = direction == .left || direction == .right
+        let towardEnd = direction == .right || direction == .down
+        let sign: CGFloat
+        switch arrangement.layout {
+        case .tile, .corner, .spiral:
+            guard horizontal else { return nil }
+            sign = towardEnd ? 1 : -1
+        case .tileLeft:
+            guard horizontal else { return nil }
+            sign = towardEnd ? -1 : 1
+        case .tileBottom:
+            guard !horizontal else { return nil }
+            sign = towardEnd ? 1 : -1
+        case .tileTop:
+            guard !horizontal else { return nil }
+            sign = towardEnd ? -1 : 1
+        case .centeredMaster:
+            // the center grows to the right and shrinks to the left
+            guard horizontal else { return nil }
+            sign = towardEnd ? 1 : -1
+        case .dwindle, .fair, .fairHorizontal, .columns, .rows, .monocle:
+            return nil
+        }
+        let next = TileArrangement.clampedFraction(arrangement.masterFraction + sign * step)
+        return next == arrangement.masterFraction ? nil : next
+    }
+
+    /// The keyboard resize for an order-driven layout: one master step, kept
+    /// only when the layout verifies.
+    private func resizeMaster(_ t: BSPTree, direction: Direction, key: TilingKey, screen: NSScreen) {
+        let previous = t.arrangement
+        guard let next = Self.steppedMasterFraction(previous, direction: direction) else { return }
+        let generation = beginLayoutGeneration()
+        let undo = setMasterFraction(key.workspace, next)
+        hyprLog(.debug, .tiling, "resizeDirection \(direction): ws\(key.workspace) master → \(String(format: "%.2f", next))")
+        let outcome = retile(key: key, screen: screen, generation: generation)
+        if case .accepted = outcome { return }
+        if layoutGeneration == generation {
+            undo()
+            t.arrangement = previous
+        }
+    }
+
+    /// Lay `(workspace, screen)` out again after its workspace's layout
+    /// changed. The tree takes the new arrangement from `arrangementSource`;
+    /// a pass that does not verify (a window whose minimum the new layout
+    /// cannot hold) puts the old arrangement and shape back and returns
+    /// false, so the caller can put its own record back too.
+    @discardableResult
+    func relayout(workspace: Int, screen: NSScreen) -> Bool {
+        let key = TilingKey(workspace: workspace, screen: screen)
+        guard let t = trees[key] else { return true }
+        let previousRoot = t.deepClone()
+        guard stamp(t, for: key) else { return true }
+        let generation = beginLayoutGeneration()
+        guard !t.allWindows.isEmpty else { return true }
+        let outcome = retile(key: key, screen: screen, generation: generation)
+        if case .accepted = outcome { return true }
+        if layoutGeneration == generation {
+            t.adopt(previousRoot)
+            hyprLog(.notice, .tiling, "layout change refused on ws\(workspace): \(t.arrangement.layout.rawValue) kept")
+        }
+        return false
+    }
+
+    /// Stamp every tree of `workspace` with its arrangement without laying
+    /// anything out: a hidden workspace takes its new layout when revealed.
+    func restampTrees(forWorkspace workspace: Int) {
+        for (key, t) in trees where key.workspace == workspace { stamp(t, for: key) }
     }
 
     /// What an explicit user request should expect from `(workspace, screen)`.

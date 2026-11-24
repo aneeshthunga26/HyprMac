@@ -296,6 +296,9 @@ class WindowManager {
         self.workspaceOrchestrator.onWillSwitch = { [weak self] workspace, screen in
             self?.workspaceOverview.showSwitchHUD(workspace: workspace, screen: screen)
         }
+        self.workspaceOrchestrator.onDesktopsRefusal = { [weak self] message, screen in
+            self?.showDesktopsRefusal(message, on: screen)
+        }
         self.workspaceOrchestrator.onRevealMissed = { [weak self] in self?.pollingScheduler.schedule(after: 0.3, trigger: .reveal) }
         self.workspaceOrchestrator.onFloatersRevealed = { [weak self] windows in self?.markRevealedFloaters(windows) }
         self.workspaceOrchestrator.onDidSwitch = { [weak self] workspace, _ in
@@ -451,6 +454,8 @@ class WindowManager {
         }
         hotkeyManager.onHyprKeyUp = { [weak self] in
             self?.hyprHeld = false
+            // a layout cycled to while Hypr was held applies now
+            self?.applyPendingLayout()
             self?.focusBrackets.hide()
             self?.reassertFocusBorderAfterHyprRelease()
         }
@@ -741,12 +746,234 @@ class WindowManager {
         focusResolver.updateFocusBorder = { [weak self] w in self?.updateFocusBorder(for: w) }
 
         configureStatusExport()
+        configureLayouts()
         configureLiveConfigUpdates()
         hotkeyManager.updateHyprKey(config.hyprKey)
         hotkeyManager.updateKeybinds(config.keybinds)
         hotkeyManager.start()
         hotkeyManager.updateTilingEnabled(config.enabled)
         hotkeyManager.updateDoubleTapCapsLock(config.doubleTapHyprTogglesCapsLock)
+    }
+
+    // MARK: - layouts
+
+    /// The layout preferences the last change was judged against, so a move
+    /// of the global master size can tell itself apart from other edits.
+    private var lastLayoutPreferences: LayoutPreferences?
+
+    private func configureLayouts() {
+        lastLayoutPreferences = LayoutPreferences(config)
+        tilingEngine.arrangementSource = { [weak self] workspace in
+            self?.config.arrangement(forWorkspace: workspace) ?? .dwindle
+        }
+        tilingEngine.setMasterFraction = { workspace, fraction in
+            let state = WorkspaceLayoutState.shared
+            let prior = state.masterFractions[workspace]
+            state.setMasterFraction(fraction, forWorkspace: workspace)
+            return { state.setMasterFraction(prior, forWorkspace: workspace) }
+        }
+        actionDispatcher.changeLayout = { [weak self] workspace, screen, delta in
+            self?.stepLayout(workspace: workspace, screen: screen, by: delta)
+        }
+    }
+
+    /// The enabled screen showing `workspace` now, nil while it is hidden.
+    private func visibleScreen(forWorkspace workspace: Int) -> NSScreen? {
+        displayManager.screens.first {
+            !workspaceManager.isMonitorDisabled($0) && workspaceManager.workspaceForScreen($0) == workspace
+        }
+    }
+
+    /// A layout cycled to while Hypr is held. Nothing is laid out until Hypr
+    /// comes up, so stepping past a layout that would not fit costs nothing
+    /// and the cycle keeps going from the pick, not from the layout in force.
+    private var pendingLayout: (workspace: Int, screen: NSScreen, layout: TilingLayout)?
+
+    /// Hypr+Space and Hypr+Shift+Space: the next or previous layout enabled
+    /// on `workspace`. With Hypr held (the chord) it only moves the preview
+    /// in the HUD and the menu bar; Hypr's release applies the last one. A
+    /// cycle that does not come from a held Hypr (a `hyprmac://` link, a
+    /// chord without Hypr) applies at once.
+    private func stepLayout(workspace: Int, screen: NSScreen, by delta: Int) {
+        let base = pendingLayout.flatMap { $0.workspace == workspace ? $0.layout : nil }
+            ?? config.currentLayout(forWorkspace: workspace)
+        let next = LayoutCycle.step(from: base, by: delta, in: config.enabledLayouts(forWorkspace: workspace))
+        guard hyprHeld else {
+            setLayout(next, forWorkspace: workspace, hudScreen: screen)
+            return
+        }
+        pendingLayout = (workspace, screen, next)
+        statusPresenter.layoutPreview = (workspace, next)
+        statusPresenter.updateMenuBarState()
+        workspaceOverview.showStatusHUD(caption: "LAYOUT", title: next.displayName,
+                                        detail: layoutHUDDetail(next, workspace: workspace)
+                                            + (next == config.currentLayout(forWorkspace: workspace)
+                                                ? " · current" : " · release Hypr to apply"),
+                                        failed: false, screen: screen)
+    }
+
+    /// Hypr came up: lay out the layout the held cycle stopped on.
+    private func applyPendingLayout() {
+        guard let pending = pendingLayout else { return }
+        pendingLayout = nil
+        statusPresenter.layoutPreview = nil
+        hyprLog(.notice, .tiling, "layout: Hypr released on \(pending.layout.rawValue) for ws\(pending.workspace)")
+        setLayout(pending.layout, forWorkspace: pending.workspace, hudScreen: pending.screen)
+        statusPresenter.updateMenuBarState()
+    }
+
+    /// "[]=   Workspace 2 · 2 of 5" for the layout HUD.
+    private func layoutHUDDetail(_ layout: TilingLayout, workspace: Int) -> String {
+        let list = config.enabledLayouts(forWorkspace: workspace)
+        let index = (list.firstIndex(of: layout) ?? 0) + 1
+        return "\(layout.symbol)   \(UserConfig.workspaceDisplayName(workspace, names: config.workspaceNames))"
+            + " · \(index) of \(list.count)"
+    }
+
+    /// Put `workspace` in `layout`: the cycle key, the menu bar and Settings
+    /// all land here. A visible workspace is laid out again at once; when
+    /// the new layout does not verify (a window that will not shrink to its
+    /// new slot), the old one stays, the pick is put back and the focused
+    /// window shakes. A hidden workspace takes its layout when revealed.
+    func setLayout(_ layout: TilingLayout, forWorkspace workspace: Int, hudScreen: NSScreen? = nil) {
+        guard config.enabledLayouts(forWorkspace: workspace).contains(layout) else { return }
+        let state = WorkspaceLayoutState.shared
+        let before = config.currentLayout(forWorkspace: workspace)
+        let priorPick = state.active[workspace]
+        let screen = visibleScreen(forWorkspace: workspace)
+        let hud = hudScreen ?? screen
+        defer {
+            statusPresenter.updateMenuBarState()
+            statusExporter.noteChange()
+        }
+        // the HUD goes up before the AX work, as a switch's does
+        if let hud {
+            workspaceOverview.showStatusHUD(caption: "LAYOUT", title: layout.displayName,
+                                            detail: layoutHUDDetail(layout, workspace: workspace),
+                                            failed: false, screen: hud)
+        }
+        guard layout != before else { return }
+        state.setActive(layout, forWorkspace: workspace)
+        hyprLog(.notice, .tiling, "layout: ws\(workspace) \(before.rawValue) → \(layout.rawValue)")
+        guard isRunning, config.enabled, !displayTransitionPending, let screen else {
+            tilingEngine.restampTrees(forWorkspace: workspace)
+            return
+        }
+        let accepted = tilingEngine.relayout(workspace: workspace, screen: screen)
+        updatePositionCache()
+        guard !accepted else { return }
+        state.setActive(priorPick, forWorkspace: workspace)
+        if let hud {
+            workspaceOverview.showStatusHUD(caption: "LAYOUT", title: "\(layout.displayName) doesn't fit",
+                                            detail: "A window here won't shrink to its slot. Kept \(before.displayName).",
+                                            failed: true, screen: hud)
+        }
+        if let focused = focusResolver.currentFocusedWindow(), let frame = focused.frame {
+            focusBorder.flashError(around: frame, windowID: focused.windowID,
+                                   message: "Not enough room for \(layout.displayName)")
+        }
+    }
+
+    // MARK: - macOS Desktops
+
+    /// macOS showed another Space: adopt the workspaces now on screen and
+    /// lay them out. The windows of the Desktop that left are not parked:
+    /// macOS hid them, and discovery leaves them known and in their trees
+    /// until their Desktop shows again.
+    private func macDesktopShown() {
+        guard isRunning, config.enabled, !displayTransitionPending else { return }
+        let changed = workspaceManager.syncWithMacDesktops()
+        guard !changed.isEmpty else { return }
+        statusPresenter.lastSwitchedWorkspace = changed.first.map { workspaceManager.workspaceForScreen($0) }
+        tileAllVisibleSpaces()
+        statusPresenter.updateMenuBarState()
+        statusExporter.noteChange()
+        refreshWorkspaceOverview()
+        NotificationCenter.default.post(name: .hyprMacWorkspaceChanged, object: nil)
+        // focus and the windows macOS just showed: the poll reads both
+        pollingScheduler.schedule(after: 0.25, trigger: .reveal)
+        // the window focused there last, once macOS has finished activating
+        // whatever it picks for the Desktop it showed
+        let shown = changed.map { (workspaceManager.workspaceForScreen($0), workspaceManager.screenID(for: $0)) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.isRunning else { return }
+            for (workspace, screenID) in shown {
+                guard let screen = self.displayManager.screens.first(where: { self.workspaceManager.screenID(for: $0) == screenID }),
+                      self.workspaceManager.workspaceForScreen(screen) == workspace else { continue }
+                self.restoreRememberedFocus(on: workspace)
+            }
+        }
+    }
+
+    /// Focus (and raise) the window `workspace` had focused when it was last
+    /// shown, if it is still there and on screen.
+    private func restoreRememberedFocus(on workspace: Int) {
+        guard let id = workspaceManager.rememberedFocus(on: workspace),
+              focusController.lastFocusedID != id,
+              let window = accessibility.getAllWindows().first(where: { $0.windowID == id }) else { return }
+        hyprLog(.debug, .orchestration, "desktops: ws\(workspace) focus back on \(id)")
+        window.isFloating = stateCache.floatingWindowIDs.contains(id)
+        window.focus()
+        focusController.recordFocus(id, reason: "desktop-shown-remembered")
+        updateFocusBorder(for: window)
+    }
+
+    /// Settings turned macOS Desktops on or off. Tiling starts over, so
+    /// trees, parks and assignments all come from the new mode.
+    private func desktopsModeChanged(_ on: Bool) {
+        hyprLog(.notice, .lifecycle, "macOS Desktops \(on ? "on" : "off") — restarting tiling")
+        guard isRunning else {
+            workspaceManager.usesMacDesktops = on
+            return
+        }
+        stop()
+        start()
+    }
+
+    /// The red feedback for a request macOS Desktops can't serve.
+    private func showDesktopsRefusal(_ message: String, on screen: NSScreen) {
+        workspaceOverview.showStatusHUD(caption: "DESKTOPS", title: "Can't do that here",
+                                        detail: message, failed: true, screen: screen)
+        if let focused = focusResolver.currentFocusedWindow(), let frame = focused.frame {
+            focusBorder.flashError(around: frame, windowID: focused.windowID, message: nil)
+        } else {
+            NSSound.beep()
+        }
+    }
+
+    /// Settings picked a layout for one workspace.
+    @objc private func workspaceLayoutRequested(_ note: Notification) {
+        guard let workspace = note.userInfo?["workspace"] as? Int,
+              let raw = note.userInfo?["layout"] as? String,
+              let layout = TilingLayout(rawValue: raw) else { return }
+        setLayout(layout, forWorkspace: workspace)
+    }
+
+    /// Settings changed a layout preference. Every workspace is stamped
+    /// again and the visible ones laid out. Moving the global master size
+    /// drops the per-workspace sizes the resize keys set, so the slider is
+    /// what every workspace shows.
+    private func layoutPreferencesChanged(_ preferences: LayoutPreferences) {
+        if let last = lastLayoutPreferences, last.masterFraction != preferences.masterFraction {
+            WorkspaceLayoutState.shared.clearMasterFractions()
+        }
+        lastLayoutPreferences = preferences
+        defer {
+            statusPresenter.updateMenuBarState()
+            statusExporter.noteChange()
+        }
+        guard isRunning, config.enabled, !displayTransitionPending else {
+            Constants.workspaceRange.forEach { tilingEngine.restampTrees(forWorkspace: $0) }
+            return
+        }
+        for workspace in Constants.workspaceRange {
+            if let screen = visibleScreen(forWorkspace: workspace) {
+                tilingEngine.relayout(workspace: workspace, screen: screen)
+            } else {
+                tilingEngine.restampTrees(forWorkspace: workspace)
+            }
+        }
+        updatePositionCache()
     }
 
     private func configureStatusExport() {
@@ -757,6 +984,8 @@ class WindowManager {
         statusExporter.hookCommand = { [weak self] in self?.config.statusHookCommand }
         statusExporter.snapshot = { [weak self] in self?.statusPresenter.statusSnapshot() }
         focusController.onChange = { [weak self] in
+            // each workspace remembers its last focus for the switch back
+            if let self { self.workspaceManager.noteFocused(self.focusController.lastFocusedID) }
             // the badge and state.json show the focused window's workspace again
             self?.statusPresenter.lastSwitchedWorkspace = nil
             self?.statusExporter.noteChange()
@@ -820,6 +1049,12 @@ class WindowManager {
             self.tilingEngine.gapSize = gap
             self.tilingEngine.outerPadding = padding
             if self.isRunning { self.retile() }
+        }
+        coordinator.onLayouts = { [weak self] preferences in
+            self?.layoutPreferencesChanged(preferences)
+        }
+        coordinator.onDesktopsMode = { [weak self] on in
+            self?.desktopsModeChanged(on)
         }
         coordinator.onMaximumSplits = { [weak self] splits in
             guard let self else { return }
@@ -1021,6 +1256,7 @@ class WindowManager {
             floatingColor: config.resolvedFloatingBorderColor.cgColor)
         dimmingOverlay.fadeDurationSec = config.chromeFadeDurationSec
         workspaceManager.disabledMonitors = config.disabledMonitors
+        workspaceManager.usesMacDesktops = config.useMacDesktops
         workspaceManager.workspaceMonitors = config.workspaceMonitors
         workspaceManager.workspaceMonitorsPerDisplaySet = config.workspaceMonitorsPerDisplaySet
         hotkeyManager.updateHyprKey(config.hyprKey)
@@ -1036,9 +1272,13 @@ class WindowManager {
                 // an update relaunch puts the desk back as it was. any
                 // other launch follows the Restore at launch setting
                 let key = LayoutSnapshotStore.displayKey(screens: self.displayManager.screens)
+                // macOS Desktops keep every window where it was: neither
+                // restore has anything it may move
                 if let handoff = self.relaunchHandoffStore.take(displayKey: key) {
-                    self.restoreRelaunchHandoff(handoff, windows: initialWindows)
-                } else if self.config.restoreLayoutOnLaunch {
+                    if !self.workspaceManager.usesMacDesktops {
+                        self.restoreRelaunchHandoff(handoff, windows: initialWindows)
+                    }
+                } else if self.config.restoreLayoutOnLaunch, !self.workspaceManager.usesMacDesktops {
                     self.restoreLayoutSnapshot(manual: false, windows: initialWindows)
                 }
             }
@@ -1139,6 +1379,10 @@ class WindowManager {
             name: .hyprMacRetileAll, object: nil
         )
         NotificationCenter.default.addObserver(
+            self, selector: #selector(workspaceLayoutRequested(_:)),
+            name: .hyprMacSetWorkspaceLayout, object: nil
+        )
+        NotificationCenter.default.addObserver(
             self, selector: #selector(screenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil
         )
@@ -1168,6 +1412,9 @@ class WindowManager {
         statusExporter.clear(quitting: !keepPauseShortcut)
         isRunning = false
         hyprHeld = false
+        // a layout cycled to but not applied yet goes with the pause
+        pendingLayout = nil
+        statusPresenter.layoutPreview = nil
         focusBrackets.hide()
         admissionRecovery.cancelAll(reason: "stop")
         minimaRevalidation.cancelAll(reason: "stop")
@@ -2048,6 +2295,15 @@ class WindowManager {
     /// - Returns: `false` when there is no snapshot for this topology.
     @discardableResult
     private func restoreLayoutSnapshot(manual: Bool, windows: [HyprWindow]? = nil) -> Bool {
+        // a restore moves windows between workspaces, which macOS Desktops
+        // only let Mission Control do
+        if workspaceManager.usesMacDesktops {
+            if manual {
+                showLayoutHUD(title: "Not with macOS Desktops",
+                              detail: "Windows move between Desktops in Mission Control.", failed: true)
+            }
+            return false
+        }
         let key = LayoutSnapshotStore.displayKey(screens: displayManager.screens)
         let snapshot = layoutStore.snapshot(for: key)
         let allWindows = snapshot == nil ? [] : (windows ?? accessibility.getAllWindows())
@@ -2730,6 +2986,12 @@ class WindowManager {
         guard !mouseButtonDown else { return }
 
         let fire = pollingScheduler.currentFire
+        // macOS Desktops: the shown workspaces first. a swipe the Space
+        // notification has not reached yet would read as every window of
+        // the new Desktop drifting onto the old workspace
+        if workspaceManager.usesMacDesktops, !workspaceManager.syncWithMacDesktops().isEmpty {
+            statusPresenter.updateMenuBarState()
+        }
         let allWindows = accessibility.getAllWindows()
         let now = Date()
         let gap = lastPollAt.map { "\(Int(now.timeIntervalSince($0) * 1000))ms since last" } ?? "first poll"
@@ -3207,6 +3469,7 @@ class WindowManager {
     /// left a fullscreen app's Space. Re-evaluate chrome visibility from
     /// the new focus target.
     @objc private func activeSpaceDidChange(_ notification: Notification) {
+        if workspaceManager.usesMacDesktops { macDesktopShown() }
         if isFullscreenSuppressed(focused: focusResolver.currentFocusedWindow()) {
             focusBorder.hide()
             focusBorder.hideFloatingBorders()

@@ -137,6 +137,7 @@ struct MenuBarView: View {
                     .font(.system(size: 11))
                 Text(monitor.name).font(.hyprBody).lineLimit(1).truncationMode(.middle)
                 Spacer()
+                if config.enabled { layoutMenu(monitor) }
             }.foregroundStyle(Color.hyprTextSecondary)
             LazyVGrid(
                 columns: Array(repeating: GridItem(.fixed(25), spacing: 6), count: 5),
@@ -161,6 +162,36 @@ struct MenuBarView: View {
         }
         .padding(.horizontal, HyprSpacing.md)
         .padding(.vertical, HyprSpacing.sm)
+    }
+
+    /// The layout of the workspace this monitor shows, and a pick of the
+    /// layouts enabled there.
+    private func layoutMenu(_ monitor: MenuBarMonitorSnapshot) -> some View {
+        let workspace = monitor.currentWorkspace
+        return Menu {
+            ForEach(config.enabledLayouts(forWorkspace: workspace)) { layout in
+                Button {
+                    appDelegate.windowManager?.setLayout(layout, forWorkspace: workspace)
+                } label: {
+                    if layout == monitor.layout {
+                        Label("\(layout.displayName)   \(layout.symbol)", systemImage: "checkmark")
+                    } else {
+                        Text("\(layout.displayName)   \(layout.symbol)")
+                    }
+                }
+            }
+            if let next = config.keybinds.first(where: { $0.action == .cycleLayout(1) }) {
+                Divider()
+                Text("Next layout: \(next.badgeLabels().joined(separator: " "))")
+            }
+        } label: {
+            // a borderless menu's label keeps only its first text
+            Text("\(monitor.layout.symbol)  \(monitor.layout.displayName)").font(.hyprMonoXs)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.visible)
+        .fixedSize()
+        .help("Layout of \(UserConfig.workspaceDisplayName(workspace, names: config.workspaceNames))")
     }
 
     // MARK: actions
@@ -334,6 +365,9 @@ class MenuBarState: ObservableObject {
     /// The focused window's rule state, read when the menu opens. nil hides
     /// the section.
     @Published var focusedWindowRule: FocusedWindowRuleInfo?
+    /// The layout of the workspace the compact badge names (the focused
+    /// one, else the cursor's), shown after the label. nil with no screens.
+    @Published var focusedLayout: TilingLayout?
 }
 
 struct MenuBarMonitorSnapshot: Equatable, Identifiable {
@@ -342,14 +376,17 @@ struct MenuBarMonitorSnapshot: Equatable, Identifiable {
     let currentWorkspace: Int
     let isPortrait: Bool
     let workspaces: [MenuBarWorkspaceBadge]
+    /// The layout `currentWorkspace` shows.
+    let layout: TilingLayout
 
     init(id: Int, name: String, currentWorkspace: Int, isPortrait: Bool,
-         workspaces: [MenuBarWorkspaceBadge] = []) {
+         workspaces: [MenuBarWorkspaceBadge] = [], layout: TilingLayout = .dwindle) {
         self.id = id
         self.name = name
         self.currentWorkspace = currentWorkspace
         self.isPortrait = isPortrait
         self.workspaces = workspaces
+        self.layout = layout
     }
 }
 
@@ -426,9 +463,21 @@ enum MenuBarPresentation {
         }.joined(separator: " ")
     }
 
-    static func monitorSummary(_ monitors: [MenuBarMonitorSnapshot], names: [String: String]) -> String {
-        monitors.map { "\($0.name): \(UserConfig.workspaceDisplayName($0.currentWorkspace, names: names))" }
-            .joined(separator: "\n")
+    static func monitorSummary(_ monitors: [MenuBarMonitorSnapshot], names: [String: String],
+                               showsLayout: Bool = false) -> String {
+        monitors.map {
+            "\($0.name): \(UserConfig.workspaceDisplayName($0.currentWorkspace, names: names))"
+                + (showsLayout ? " · \($0.layout.displayName)" : "")
+        }
+        .joined(separator: "\n")
+    }
+
+    /// The label's one line of text with the layout symbol after it. The
+    /// menu bar draws a label as one image and one line, so the symbol has
+    /// to ride in the text, not in a second view.
+    static func labelText(_ text: String, layout: TilingLayout?) -> String {
+        guard let layout else { return text }
+        return text.isEmpty ? layout.symbol : "\(text)  \(layout.symbol)"
     }
 
     static func showsWorkspaceState(enabled: Bool, indicatorEnabled: Bool,
@@ -514,6 +563,101 @@ enum MenuBarPresentation {
         return .symbol("\(glyph).\(shape)\(workspace.isMaximized ? ".fill" : "")")
     }
 
+    // MARK: layout icon
+
+    /// One piece of a label drawn as a single image.
+    enum LabelPart {
+        case text(String, size: CGFloat)
+        case symbol(String)
+        case image(NSImage)
+    }
+
+    /// The layout as a small drawing: the Settings thumbnail (four windows,
+    /// `TilingLayoutGeometry`) at menu bar size, as a template image so the
+    /// menu bar tints it. Monocle fans three windows out, as there.
+    static func layoutIcon(_ layout: TilingLayout, size: NSSize = NSSize(width: 21, height: 14)) -> NSImage {
+        let image = NSImage(size: size, flipped: true) { rect in
+            let frame = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 2.5, yRadius: 2.5)
+            NSColor.black.withAlphaComponent(0.45).setStroke()
+            frame.lineWidth = 1
+            frame.stroke()
+            let inner = rect.insetBy(dx: 2.5, dy: 2.5)
+            let alphas: [CGFloat] = [1, 0.8, 0.68, 0.58]
+            if layout == .monocle {
+                let step: CGFloat = 1.5
+                for index in 0..<3 {
+                    let offset = CGFloat(index) * step
+                    let card = NSRect(x: inner.minX + offset, y: inner.minY + offset,
+                                      width: inner.width - 2 * step, height: inner.height - 2 * step)
+                    let path = NSBezierPath(roundedRect: card, xRadius: 1, yRadius: 1)
+                    if index == 2 {
+                        NSColor.black.setFill()
+                        path.fill()
+                    } else {
+                        NSColor.black.withAlphaComponent(0.6).setStroke()
+                        path.lineWidth = 0.8
+                        path.stroke()
+                    }
+                }
+                return true
+            }
+            let rects = TilingLayoutGeometry.rects(layout, count: 4, in: inner, gap: 1.2)
+            for (index, tile) in rects.enumerated() {
+                NSColor.black.withAlphaComponent(alphas[min(index, alphas.count - 1)]).setFill()
+                NSBezierPath(roundedRect: tile, xRadius: 0.8, yRadius: 0.8).fill()
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    /// `parts` side by side in one template image, `labelHeight` tall. The
+    /// menu bar draws a label as one image and one line of text and drops
+    /// the rest, so a label that needs text, then an icon, then more text
+    /// has to be drawn as one picture.
+    static func labelImage(_ parts: [LabelPart], spacing: CGFloat = 5) -> NSImage {
+        let pieces: [(size: NSSize, draw: (NSRect) -> Void)] = parts.compactMap { part in
+            switch part {
+            case let .text(text, size):
+                let string = NSAttributedString(string: text, attributes: [
+                    .font: NSFont.systemFont(ofSize: size, weight: .regular),
+                    .foregroundColor: NSColor.black,
+                ])
+                let bounds = string.size()
+                return (NSSize(width: ceil(bounds.width), height: ceil(bounds.height)), { string.draw(in: $0) })
+            case let .symbol(name):
+                let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+                guard let glyph = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                    .withSymbolConfiguration(config) else { return nil }
+                return (glyph.size, { glyph.draw(in: $0) })
+            case let .image(image):
+                return (image.size, { image.draw(in: $0) })
+            }
+        }
+        let width = pieces.reduce(0) { $0 + $1.size.width } + spacing * CGFloat(max(pieces.count - 1, 0))
+        let height = labelHeight
+        let image = NSImage(size: NSSize(width: max(width, 1), height: height), flipped: false) { _ in
+            var x: CGFloat = 0
+            for piece in pieces {
+                piece.draw(NSRect(x: x, y: ((height - piece.size.height) / 2).rounded(),
+                                  width: piece.size.width, height: piece.size.height))
+                x += piece.size.width + spacing
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    /// The image a label with a layout icon shows: `leading` parts, the
+    /// icon, then `trailing` parts.
+    static func labelImage(leading: [LabelPart], layout: TilingLayout, trailing: [LabelPart] = []) -> NSImage {
+        labelImage(leading + [.image(layoutIcon(layout))] + trailing)
+    }
+
+    static let labelHeight: CGFloat = 20
+
     // 17 pt medium is about the size of the icons next to it
     static let compactPointSize: CGFloat = 17
     // square is 20x18 and circle 20x20 at that size, so draw both into one box
@@ -572,23 +716,46 @@ struct WorkspaceIndicatorLabel: View {
         .onAppear { SettingsWindow.openWindow = openWindow }
     }
 
+    /// The layout after the label, while tiling runs and Settings shows it.
+    private var shownLayout: TilingLayout? {
+        config.enabled && config.showLayoutInMenuBar ? state.focusedLayout : nil
+    }
+
+    private var summary: String {
+        MenuBarPresentation.monitorSummary(state.monitors, names: config.workspaceNames,
+                                           showsLayout: config.enabled)
+    }
+
     @ViewBuilder private var content: some View {
-        if style == .compact, state.hasData, let workspace = state.compactWorkspace {
+        if let layout = shownLayout, let parts = iconLabelParts {
+            // one image: the menu bar keeps a single image and text line
+            Image(nsImage: MenuBarPresentation.labelImage(leading: parts.leading, layout: layout,
+                                                          trailing: parts.trailing))
+                .help(summary)
+                .accessibilityLabel("\(state.labelText) \(layout.displayName)")
+        } else if style == .compact, state.hasData, let workspace = state.compactWorkspace {
             Group {
                 switch MenuBarPresentation.compactLabel(workspace, names: config.workspaceNames) {
                 case .name(let name, let fullscreen):
                     HStack(spacing: 5) {
-                        MenuBarLabelText(fullscreen: fullscreen, text: name)
+                        MenuBarLabelText(fullscreen: fullscreen,
+                                         text: MenuBarPresentation.labelText(name, layout: shownLayout))
                     }
                 case .symbol(let symbol):
-                    if let image = MenuBarPresentation.compactImage(symbol: symbol) {
-                        Image(nsImage: image)
-                    } else {
-                        Image(systemName: symbol)
+                    HStack(spacing: 4) {
+                        if let image = MenuBarPresentation.compactImage(symbol: symbol) {
+                            Image(nsImage: image)
+                        } else {
+                            Image(systemName: symbol)
+                        }
+                        if let layout = shownLayout {
+                            Text(layout.symbol)
+                                .font(.system(size: 12, weight: .regular))
+                        }
                     }
                 }
             }
-            .help(MenuBarPresentation.monitorSummary(state.monitors, names: config.workspaceNames))
+            .help(summary)
         } else if style != .compact, MenuBarPresentation.showsIndicator(
             hasData: state.hasData,
             labelText: state.labelText,
@@ -596,7 +763,8 @@ struct WorkspaceIndicatorLabel: View {
             HStack(spacing: 5) {
                 // the icon stands in for the glyphs
                 MenuBarLabelText(fullscreen: state.isFullscreen,
-                                 text: state.isFullscreen ? "" : state.labelText)
+                                 text: MenuBarPresentation.labelText(state.isFullscreen ? "" : state.labelText,
+                                                                     layout: shownLayout))
                 if state.scratchpadCount > 0 {
                     Image(systemName: state.scratchpadVisible ? "tray.fill" : "tray")
                     if state.scratchpadCount > 1 {
@@ -605,10 +773,40 @@ struct WorkspaceIndicatorLabel: View {
                     }
                 }
             }
-            .help(MenuBarPresentation.monitorSummary(state.monitors, names: config.workspaceNames))
+            .help(summary)
         } else {
             Image(systemName: "rectangle.split.2x2")
         }
+    }
+
+    /// What goes before and after the layout icon, for the style in use.
+    /// nil when the label shows no workspace state, so the plain icon stays.
+    private var iconLabelParts: (leading: [MenuBarPresentation.LabelPart],
+                                 trailing: [MenuBarPresentation.LabelPart])? {
+        let fullscreenIcon = "arrow.up.left.and.arrow.down.right"
+        if style == .compact, state.hasData, let workspace = state.compactWorkspace {
+            switch MenuBarPresentation.compactLabel(workspace, names: config.workspaceNames) {
+            case .name(let name, let fullscreen):
+                return ((fullscreen ? [.symbol(fullscreenIcon)] : []) + [.text(name, size: 12)], [])
+            case .symbol(let symbol):
+                guard let badge = MenuBarPresentation.compactImage(symbol: symbol) else { return nil }
+                return ([.image(badge)], [])
+            }
+        }
+        guard style != .compact, MenuBarPresentation.showsIndicator(
+            hasData: state.hasData, labelText: state.labelText, scratchpadCount: state.scratchpadCount) else {
+            return nil
+        }
+        // the icon stands in for the glyphs while a window fills the display
+        let leading: [MenuBarPresentation.LabelPart] = state.isFullscreen
+            ? [.symbol(fullscreenIcon)]
+            : (state.labelText.isEmpty ? [] : [.text(state.labelText, size: 12)])
+        var trailing: [MenuBarPresentation.LabelPart] = []
+        if state.scratchpadCount > 0 {
+            trailing.append(.symbol(state.scratchpadVisible ? "tray.fill" : "tray"))
+            if state.scratchpadCount > 1 { trailing.append(.text("\(state.scratchpadCount)", size: 11)) }
+        }
+        return (leading, trailing)
     }
 }
 

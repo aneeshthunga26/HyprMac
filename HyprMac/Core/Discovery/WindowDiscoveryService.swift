@@ -614,7 +614,19 @@ final class WindowDiscoveryService {
         // store, until a pass can read it again: a single failed read used to
         // pull the window out of its tree, expand the neighbour over it, and
         // re-insert it somewhere else on the next poll.
-        let missing = stateCache.knownWindowIDs.subtracting(currentIDs)
+        // macOS Desktops: a window on a Desktop that isn't showing is missing
+        // from every walk by design, as a parked window never is. it is not a
+        // tab that left, not off for a moment, and not closed: it keeps its
+        // tile and its workspace until its Desktop shows. the scratchpad
+        // (ws 0) still parks on the shown Desktop, so it keeps the ordinary path
+        let onHiddenDesktop = workspaceManager.usesMacDesktops
+            ? stateCache.knownWindowIDs.subtracting(currentIDs).filter { id in
+                guard let workspace = workspaceManager.workspaceFor(id),
+                      workspace != ScratchpadController.workspace else { return false }
+                return !workspaceManager.isWorkspaceVisible(workspace)
+            }
+            : []
+        let missing = stateCache.knownWindowIDs.subtracting(currentIDs).subtracting(onHiddenDesktop)
         let unreadable = missing.intersection(unreadableWindowIDs)
         // one AX question per missing window per cycle, shared between the
         // holds and the hidden classification below
@@ -1213,10 +1225,14 @@ final class WindowDiscoveryService {
             // guards so it lands where it visibly opened.
             let reopenedOntoHiddenWs = justReturned.contains(w.windowID)
                 && !visibleWorkspaces.contains(recordedWs)
+            // macOS Desktops: a window the walk sees on screen is on the
+            // Desktop its display shows, floater or not (Mission Control
+            // moved it, or it was there when the mode came on)
+            let desktops = workspaceManager.usesMacDesktops
             // floating windows can be anywhere by design — skip, unless
             // reopened onto a hidden ws
             let floating = stateCache.floatingWindowIDs.contains(w.windowID)
-            guard !floating || reopenedOntoHiddenWs else { continue }
+            guard !floating || reopenedOntoHiddenWs || desktops else { continue }
             // majority frame overlap, not center-point: a min-size-crammed
             // window inflated across a monitor edge keeps a majority on its
             // own screen, and park slivers / stale off-screen frames fail
@@ -1226,6 +1242,9 @@ final class WindowDiscoveryService {
                   let physicalScreen = majorityOverlapScreen(w) else { continue }
             // skip if the window sits on a disabled monitor — handled elsewhere
             guard !workspaceManager.isMonitorDisabled(physicalScreen) else { continue }
+            // a full-screen app's Space or a Desktop past the last workspace:
+            // its windows are on no workspace's Desktop, so nothing moves
+            guard !workspaceManager.showsUnmappedDesktop(physicalScreen) else { continue }
             // on its way to the cursor's monitor: left alone until it is
             // mostly on its workspace's screen
             let physicalWs = workspaceManager.workspaceForScreen(physicalScreen)
@@ -1235,7 +1254,7 @@ final class WindowDiscoveryService {
                 driftExemptions.removeValue(forKey: w.windowID)
             }
             guard physicalWs != recordedWs else { continue }
-            if !reopenedOntoHiddenWs {
+            if !reopenedOntoHiddenWs && !desktops {
                 // with static workspace anchoring, a window whose recorded
                 // workspace's home matches its physical screen is correctly
                 // placed — even if some other workspace happens to be visible

@@ -50,7 +50,7 @@ enum ExternalCommand: Equatable {
         "toggleFloating", "toggleSplit", "showKeybinds", "showWorkspaceOverview",
         "focusMenuBar", "focusFloating", "moveToNextEmptyWorkspace", "closeWindow",
         "toggleScratchpad", "moveToScratchpad", "toggleTiling", "restoreLayout", "retileAll",
-        "toggleMaximize",
+        "toggleMaximize", "cycleLayout",
     ]
 
     private typealias Builder = ([URLQueryItem]) -> Action?
@@ -76,6 +76,13 @@ enum ExternalCommand: Equatable {
                 switch single("delta", in: query) {
                 case "1": return .cycleWorkspace(1)
                 case "-1": return .cycleWorkspace(-1)
+                default: return nil
+                }
+            },
+            "cycleLayout": { query in
+                switch single("delta", in: query) {
+                case "1": return .cycleLayout(1)
+                case "-1": return .cycleLayout(-1)
                 default: return nil
                 }
             },

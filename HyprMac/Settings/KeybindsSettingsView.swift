@@ -586,7 +586,7 @@ struct KeybindEditorSheet: View {
                     DirectionPicker(direction: $vm.directionParam)
                 case .switchWorkspace, .moveToWorkspace, .moveToWorkspaceAndFollow:
                     WorkspacePicker(workspace: $vm.workspaceParam)
-                case .cycleWorkspace:
+                case .cycleWorkspace, .cycleLayout:
                     Picker("Direction", selection: $vm.workspaceParam) {
                         Text("Next").tag(1)
                         Text("Previous").tag(-1)

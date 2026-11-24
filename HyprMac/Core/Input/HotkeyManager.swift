@@ -137,7 +137,7 @@ class HotkeyManager {
     static func ignoresAutorepeat(_ action: Action) -> Bool {
         switch action {
         case .toggleTiling, .moveToNextEmptyWorkspace, .toggleMaximize, .runCommand, .retileAll,
-             .showWindowRules:
+             .showWindowRules, .cycleLayout:
             return true
         default:
             return false
@@ -407,6 +407,9 @@ class HotkeyManager {
     /// duration — pure dictionary/set work plus at most one IOKit query,
     /// so hold times are microseconds.
     func handleEvent(_ type: CGEventType, _ event: CGEvent) -> CGEvent? {
+        // HyprMac's own "Switch to Desktop N" post (Desktops mode). It goes
+        // to macOS as posted: read with Hypr held it could match a chord
+        if event.getIntegerValueField(.eventSourceUserData) == DesktopShortcut.eventMarker { return event }
         stateLock.lock()
         defer { stateLock.unlock() }
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))

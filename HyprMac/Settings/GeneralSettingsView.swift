@@ -24,6 +24,7 @@ struct GeneralSettingsView: View {
             mousePanel
             neverTilePanel
             workspaceNamesPanel
+            MacDesktopsPanel()
             workspacePinsPanel
             systemPanel
             updatesPanel

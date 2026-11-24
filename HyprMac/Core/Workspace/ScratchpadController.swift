@@ -186,7 +186,7 @@ final class ScratchpadController {
         if summon {
             show(focusing: id)
         } else if let screen = displayManager.screens.first {
-            workspaceManager.hideInCorner(window, on: screen)
+            workspaceManager.hideInCorner(window, on: screen, scratchpad: true)
         }
     }
 
@@ -227,7 +227,7 @@ final class ScratchpadController {
         let returning = returned.filter { contains($0.windowID) }
         if !isVisible {
             if let parkScreen = displayManager.screens.first {
-                for w in returning { workspaceManager.hideInCorner(w, on: parkScreen) }
+                for w in returning { workspaceManager.hideInCorner(w, on: parkScreen, scratchpad: true) }
             }
             return
         }
@@ -491,7 +491,7 @@ final class ScratchpadController {
                 workspaceManager.setSavedFloatingFrame(intended, for: id)
             }
         }
-        if let parkScreen { workspaceManager.hideInCorner(w, on: parkScreen) }
+        if let parkScreen { workspaceManager.hideInCorner(w, on: parkScreen, scratchpad: true) }
     }
 
     // MARK: - send / eject
@@ -553,7 +553,7 @@ final class ScratchpadController {
                     }
                 } else if let screen = displayManager.screens.first {
                     // parked as a tiled member; the next show() tiles it
-                    workspaceManager.hideInCorner(focused, on: screen)
+                    workspaceManager.hideInCorner(focused, on: screen, scratchpad: true)
                 }
             } else {
                 stateCache.setFloating(true, window: focused)
@@ -563,7 +563,7 @@ final class ScratchpadController {
                 } else {
                     saveFreeFormFrame(focused, fallback: frameBeforeSend)
                     if let screen = displayManager.screens.first {
-                        workspaceManager.hideInCorner(focused, on: screen)
+                        workspaceManager.hideInCorner(focused, on: screen, scratchpad: true)
                     }
                 }
             }

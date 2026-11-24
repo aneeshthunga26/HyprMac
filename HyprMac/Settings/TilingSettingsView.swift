@@ -1,4 +1,4 @@
-// "Layout" tab. Window gaps, focus color, dim intensity,
+// "Layout" tab. Tiling layouts (LayoutsSettingsView), window gaps, focus color, dim intensity,
 // per-monitor enable, max-splits, edge padding and workspaces plus a live
 // dwindle preview.
 
@@ -11,6 +11,7 @@ struct TilingSettingsView: View {
 
     var body: some View {
         VStack(spacing: HyprSpacing.lg) {
+            LayoutsSettingsSection()
             gapsPanel
             focusPanel
             scratchpadPanel

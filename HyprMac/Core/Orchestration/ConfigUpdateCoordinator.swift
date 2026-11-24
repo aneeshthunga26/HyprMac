@@ -1,6 +1,28 @@
 import Cocoa
 import Combine
 
+/// The layout settings, as one value: any change re-lays out the visible
+/// workspaces and refreshes the menu bar.
+struct LayoutPreferences: Equatable {
+    var enabled: [TilingLayout] = UserConfigDefaults.enabledLayouts
+    var defaultLayout: TilingLayout = UserConfigDefaults.defaultLayout
+    var workspaceOverrides: [String: WorkspaceLayoutOverride] = [:]
+    var masterFraction: CGFloat = UserConfigDefaults.layoutMasterFraction
+    var masterCount: Int = UserConfigDefaults.layoutMasterCount
+    var showInMenuBar: Bool = UserConfigDefaults.showLayoutInMenuBar
+
+    init() {}
+
+    init(_ config: UserConfig) {
+        enabled = config.enabledLayouts
+        defaultLayout = config.defaultLayout
+        workspaceOverrides = config.workspaceLayouts
+        masterFraction = config.layoutMasterFraction
+        masterCount = config.layoutMasterCount
+        showInMenuBar = config.showLayoutInMenuBar
+    }
+}
+
 /// A post-mutation snapshot of the settings that have live runtime effects.
 struct RuntimeConfigState: Equatable {
     let enabled: Bool
@@ -30,6 +52,8 @@ struct RuntimeConfigState: Equatable {
     let scratchpadTileByDefault: Bool
     let scratchpadRegionInset: CGFloat
     let doubleTapHyprTogglesCapsLock: Bool
+    let layouts: LayoutPreferences
+    let useMacDesktops: Bool
 
     init(
         enabled: Bool, keybinds: [Keybind], hyprKey: HyprKey,
@@ -49,7 +73,9 @@ struct RuntimeConfigState: Equatable {
         dimInactiveWindows: Bool, dimIntensity: Double, chromeFadeDurationSec: Double,
         windowCornerRadius: CGFloat, scratchpadTileByDefault: Bool,
         scratchpadRegionInset: CGFloat,
-        doubleTapHyprTogglesCapsLock: Bool = UserConfigDefaults.doubleTapHyprTogglesCapsLock
+        doubleTapHyprTogglesCapsLock: Bool = UserConfigDefaults.doubleTapHyprTogglesCapsLock,
+        layouts: LayoutPreferences = LayoutPreferences(),
+        useMacDesktops: Bool = false
     ) {
         self.enabled = enabled
         self.keybinds = keybinds
@@ -78,6 +104,8 @@ struct RuntimeConfigState: Equatable {
         self.scratchpadTileByDefault = scratchpadTileByDefault
         self.scratchpadRegionInset = scratchpadRegionInset
         self.doubleTapHyprTogglesCapsLock = doubleTapHyprTogglesCapsLock
+        self.layouts = layouts
+        self.useMacDesktops = useMacDesktops
     }
 
     init(_ config: UserConfig) {
@@ -105,7 +133,9 @@ struct RuntimeConfigState: Equatable {
             windowCornerRadius: config.windowCornerRadius,
             scratchpadTileByDefault: config.scratchpadTileByDefault,
             scratchpadRegionInset: config.scratchpadRegionInset,
-            doubleTapHyprTogglesCapsLock: config.doubleTapHyprTogglesCapsLock)
+            doubleTapHyprTogglesCapsLock: config.doubleTapHyprTogglesCapsLock,
+            layouts: LayoutPreferences(config),
+            useMacDesktops: config.useMacDesktops)
     }
 }
 
@@ -150,6 +180,8 @@ final class ConfigUpdateCoordinator {
     var onScratchpadRegion: (CGFloat) -> Void = { _ in }
     var onScratchpadEntryMode: (Bool) -> Void = { _ in }
     var onDoubleTapCapsLock: (Bool) -> Void = { _ in }
+    var onLayouts: (LayoutPreferences) -> Void = { _ in }
+    var onDesktopsMode: (Bool) -> Void = { _ in }
 
     private var current: RuntimeConfigState
     private var observation: AnyCancellable?
@@ -229,5 +261,7 @@ final class ConfigUpdateCoordinator {
         if next.doubleTapHyprTogglesCapsLock != previous.doubleTapHyprTogglesCapsLock {
             onDoubleTapCapsLock(next.doubleTapHyprTogglesCapsLock)
         }
+        if next.layouts != previous.layouts { onLayouts(next.layouts) }
+        if next.useMacDesktops != previous.useMacDesktops { onDesktopsMode(next.useMacDesktops) }
     }
 }

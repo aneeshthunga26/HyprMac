@@ -30,6 +30,9 @@ struct StatusSnapshot: Codable, Equatable {
         let monitor: String?
         let visible: Bool
         let windows: [Window]
+        // the layout the workspace shows (TilingLayout raw value). absent
+        // when the input names none, so older readers see the same shape
+        var layout: String? = nil
     }
 
     var version = 1
@@ -63,6 +66,8 @@ struct StatusSnapshot: Codable, Equatable {
         var names: [String: String]
         /// the workspace just switched to, held until focus or the pointer moves
         var switchedTo: Int? = nil
+        /// the layout each workspace shows
+        var layouts: [Int: TilingLayout] = [:]
     }
 
     /// Hidden windows are left out everywhere, as in the menu bar: a ghost
@@ -103,7 +108,8 @@ struct StatusSnapshot: Codable, Equatable {
             let name = input.names[String(ws)]?.trimmingCharacters(in: .whitespacesAndNewlines)
             return Workspace(id: ws, name: name?.isEmpty == false ? name : nil, monitor: monitor,
                              visible: visible.contains(ws),
-                             windows: live(input.assigned[ws] ?? []).map { window($0, detailed: true) })
+                             windows: live(input.assigned[ws] ?? []).map { window($0, detailed: true) },
+                             layout: input.layouts[ws]?.rawValue)
         }
         return StatusSnapshot(
             focusedWorkspace: focusScreen?.visibleWorkspace,

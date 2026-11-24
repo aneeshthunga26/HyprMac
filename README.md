@@ -32,6 +32,85 @@ Free, open source, and the first real job your Caps Lock key has ever had.
 
 </div>
 
+> [!NOTE]
+> **This is a fork of [zacharytgray/HyprMac](https://github.com/zacharytgray/HyprMac).** It adds
+> tiling layouts, a macOS Desktops mode and some focus behaviour on top of the original; see
+> [What this fork adds](#what-this-fork-adds). The Homebrew cask, the DMG and hyprmac.app install
+> the original HyprMac, not this fork. To run the fork, [build it from source](#building-this-fork).
+
+## What this fork adds
+
+### Tiling layouts, after awesome
+
+- **Thirteen layouts.** Dwindle (the original BSP tiling, still the default), master stack with the
+  stack on the right, on the left, in a row below or in a row above, grid filled by row or by
+  column, spiral, columns, rows, centered master, corner and monocle.
+- **Settings → Tiling → Layouts.** Turn each layout on or off from a card with a live preview, pick
+  the layout workspaces start in, and set the master size and how many windows the master area
+  holds.
+- **Per-workspace layouts.** Give any workspace its own list of layouts and its own starting
+  layout, or switch the layout a workspace is in right now.
+- **Hypr+Space / Hypr+Shift+Space** step the focused workspace through its layouts. While Hypr is
+  held, each press only moves a preview in the HUD and the menu bar; releasing Hypr applies the last
+  one. A layout a window can't shrink into is refused, and the workspace keeps the one it had.
+- **Hypr+Ctrl+Shift+arrows** move the master boundary in the master layouts, per workspace.
+- **Monocle** stacks every window on one frame. Hypr+arrows step through them, Hypr+Shift+arrows
+  reorder them.
+- **Menu bar.** A small drawing of the focused workspace's layout sits after the workspace glyphs,
+  and the menu has a layout picker for each monitor.
+- **For status bars and scripts.** `state.json` names each workspace's `layout`, and
+  `hyprmac://action/cycleLayout?delta=1` steps it.
+
+### macOS Desktops mode
+
+Settings → Workspaces → macOS Desktops makes each workspace one of your Mission Control Desktops
+instead of HyprMac's own virtual workspaces:
+
+- Hypr+number slides to the workspace's Desktop with the native animation, as Ctrl+number does.
+- A swipe, Ctrl+number or a Mission Control click switches HyprMac along with it.
+- Each Desktop tiles on its own. A window dragged to another Desktop in Mission Control joins that
+  Desktop's workspace.
+- Nothing is parked, so the 1 px window sliver in the screen corner is gone.
+
+It needs a Desktop per workspace you use, the "Switch to Desktop N" shortcuts turned on (Keyboard
+Shortcuts → Mission Control) and "Automatically rearrange Spaces based on most recent use" turned
+off. The Settings panel checks all three. With SIP on, macOS lets no app move another app's window
+to a hidden Desktop, so moving a window to a hidden workspace from the keyboard and restoring a
+saved layout are off in this mode, and the scratchpad stays on the Desktop it was used on.
+[How it works](docs/desktop-switching-notes.md#the-macos-desktops-mode).
+
+### Focus
+
+- **Hypr+arrows reach floating windows** as well as tiles.
+- **Each workspace remembers its last focused window** and focuses it again when you come back to
+  the workspace. In monocle, that window comes back on top.
+
+### Building this fork
+
+There are no signed releases of the fork. You need Xcode and
+[XcodeGen](https://github.com/yonaskolb/XcodeGen):
+
+```sh
+brew install xcodegen
+xcodegen generate
+xcodebuild -project HyprMac.xcodeproj -scheme "HyprMac Debug" -configuration Release \
+  -derivedDataPath build/fork CODE_SIGNING_ALLOWED=NO ARCHS=arm64 build
+codesign --force --deep --sign - --entitlements HyprMac/HyprMac-Release.entitlements \
+  "build/fork/Build/Products/Release/HyprMac Debug.app"
+```
+
+Then:
+
+1. Quit the original HyprMac if it is running. Only one copy runs at a time.
+2. Open `HyprMac Debug.app` and grant it Accessibility.
+
+It shares its settings folder with the original, so your keys and preferences carry over. An
+ad-hoc signed build is a new app to macOS each time it is rebuilt. After a rebuild, remove its old
+Accessibility entry and grant it again.
+
+The fork's tests run with `./scripts/test-isolated.sh --debug-variant`, as upstream's do.
+
+
 ## What it does
 
 If your Mac usually looks like a pile of windows stacked on top of each other, and the one you
@@ -97,6 +176,8 @@ every shortcut, and you can type to filter it. When you want more, every keybind
 and you can point keys at your own scripts.
 
 ## Install
+
+> These steps install the original HyprMac. For this fork, see [Building this fork](#building-this-fork).
 
 ```sh
 brew install --cask hyprmac
@@ -210,7 +291,8 @@ You'll feel at home. The differences are mostly macOS being macOS.
 | In Hyprland | In HyprMac |
 |-------------|------------|
 | Dwindle&nbsp;layout | BSP dwindle. New windows split the focused one, and <kbd>Hypr</kbd> + <kbd>J</kbd> flips the split direction. |
-| Workspaces | Ten virtual workspaces on keys 1–9 and 0. macOS has no public API for this, so HyprMac keeps its own and hides the other workspaces' windows when you switch. |
+| Layouts | awesome-style layouts beside dwindle: master stack (any side), grid, spiral, columns, rows, centered master, corner and monocle. Turn them on in Settings → Tiling, per workspace if you like, and cycle with <kbd>Hypr</kbd> + <kbd>Space</kbd>. The menu bar shows the current one. |
+| Workspaces | Ten virtual workspaces on keys 1–9 and 0. macOS has no public API for this, so HyprMac keeps its own and hides the other workspaces' windows when you switch. Or turn on Settings → Workspaces → macOS Desktops and each workspace is one of your Mission Control Desktops, with the native slide. |
 | Special&nbsp;workspace | The scratchpad, on <kbd>Hypr</kbd> + <kbd>S</kbd>. |
 | Fullscreen | <kbd>Hypr</kbd> + <kbd>F</kbd> fills the display over the workspace. Native macOS fullscreen spawns its own Space and wrecks the layout, so HyprMac does not use it. |
 | `follow_mouse` | Focus follows mouse, on by default, with an adjustable hover rate. |
@@ -261,6 +343,7 @@ Everything below is configurable in Settings → Keys. The full reference lives 
 | `Hypr + T` | Toggle floating and tiled |
 | `Hypr + Shift + T` | Cycle focus through floating windows |
 | `Hypr + J` | Toggle split direction |
+| `Hypr + Space` / `Hypr + Shift + Space` | Next / previous layout on the focused workspace |
 | `Hypr + S` / `Hypr + Shift + S` | Toggle scratchpad / send window to scratchpad |
 | `Hypr + W` | Close window |
 | `Hypr + P` | Pause tiling. While paused, Caps Lock is a normal Caps Lock again, so resume from the menu bar. With F13 to F20 or a modifier as the Hypr key, `Hypr + P` also resumes |

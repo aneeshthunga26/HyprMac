@@ -29,6 +29,46 @@ class WorkspaceManager {
     /// Screen → workspace currently shown on that screen.
     private(set) var monitorWorkspace: [Int: Int] = [:]
 
+    /// Workspaces are the user's Mission Control Desktops
+    /// (`NativeDesktops.swift`). macOS then decides which workspace each
+    /// display shows and hides the rest: HyprMac never parks a regular
+    /// workspace's window, and a window on screen belongs to the workspace
+    /// its display shows.
+    var usesMacDesktops = false
+
+    /// The Desktop map as last read. Desktops mode only.
+    private(set) var desktopMap = NativeDesktopMap(displays: [], screens: [])
+
+    /// Read the Spaces again and adopt what each display shows. Returns
+    /// the screens whose visible workspace changed. A display showing a
+    /// Space no workspace maps to keeps its workspace.
+    @discardableResult
+    func syncWithMacDesktops(_ displays: [DisplayDesktops] = DisplayDesktops.current()) -> [NSScreen] {
+        guard usesMacDesktops else { return [] }
+        let enabled = enabledScreensLeftToRight()
+        desktopMap = NativeDesktopMap(displays: displays, screens: enabled.map {
+            NativeDesktopMap.Screen(key: screenID(for: $0), uuid: $0.displayUUIDString,
+                                    workspaces: workspacesAnchoredTo($0))
+        })
+        var changed: [NSScreen] = []
+        for screen in enabled {
+            let sid = screenID(for: screen)
+            guard let shown = desktopMap.visible[sid], monitorWorkspace[sid] != shown else { continue }
+            hyprLog(.notice, .lifecycle, "desktops: \(screen.localizedName) shows ws\(shown) (was ws\(monitorWorkspace[sid].map(String.init) ?? "none"))")
+            monitorWorkspace[sid] = shown
+            rememberVisible(shown, on: screen)
+            changed.append(screen)
+        }
+        return changed
+    }
+
+    /// The display shows a Space no workspace maps to (a full-screen app,
+    /// a Desktop past the last workspace). Desktops mode only: nothing on
+    /// it is reassigned while it does.
+    func showsUnmappedDesktop(_ screen: NSScreen) -> Bool {
+        usesMacDesktops && desktopMap.unmapped.contains(screenID(for: screen))
+    }
+
     /// Window → workspace assignment.
     private var windowWorkspaces: [CGWindowID: Int] = [:]
 
@@ -39,6 +79,27 @@ class WorkspaceManager {
     /// Pre-hide frames for floating windows. Restored on the next
     /// reveal so floaters return to their last user-chosen position.
     private var savedFloatingFrames: [CGWindowID: CGRect] = [:]
+
+    /// The window that last had focus on each workspace, so a switch back
+    /// focuses it again (in monocle, the one on top). Read through
+    /// `rememberedFocus(on:)`, which checks it still belongs there.
+    private var lastFocused: [Int: CGWindowID] = [:]
+
+    /// Focus moved to `windowID`. Remembered for its workspace while that
+    /// workspace shows: a focus event from a window being hidden must not
+    /// overwrite the memory of the workspace it is leaving.
+    func noteFocused(_ windowID: CGWindowID) {
+        guard windowID != 0, let workspace = windowWorkspaces[windowID],
+              workspace != 0, isWorkspaceVisible(workspace) else { return }
+        lastFocused[workspace] = windowID
+    }
+
+    /// The window to focus when `workspace` shows again: the one focused
+    /// there last, while it is still assigned to it.
+    func rememberedFocus(on workspace: Int) -> CGWindowID? {
+        guard let id = lastFocused[workspace], windowWorkspaces[id] == workspace else { return nil }
+        return id
+    }
 
     /// The workspace each display last showed, so a display that leaves and
     /// comes back shows it again. Written under the display's name and
@@ -262,6 +323,8 @@ class WorkspaceManager {
         }
 
         hyprLog(.debug, .lifecycle, "init: monitors=\(monitorWorkspace) enabled=\(enabled.count)")
+        // macOS Desktops: what each display shows wins over the fallback
+        syncWithMacDesktops()
     }
 
     /// Workspace currently visible on `screen`. Self-heals by calling
@@ -375,6 +438,7 @@ class WorkspaceManager {
     /// window closes or its app terminates.
     func removeWindow(_ windowID: CGWindowID) {
         parkFailures.removeValue(forKey: windowID)
+        for (workspace, id) in lastFocused where id == windowID { lastFocused.removeValue(forKey: workspace) }
         if let old = windowWorkspaces[windowID] {
             workspaceWindowSets[old]?.remove(windowID)
         }
@@ -405,8 +469,14 @@ class WorkspaceManager {
     }
 
     /// Park `window` at the global hide position via the
-    /// EnhancedUI-guarded position write.
-    func hideInCorner(_ window: HyprWindow, on screen: NSScreen) {
+    /// EnhancedUI-guarded position write. In Desktops mode macOS hides
+    /// regular workspaces, so only the scratchpad (`scratchpad: true`)
+    /// still parks.
+    func hideInCorner(_ window: HyprWindow, on screen: NSScreen, scratchpad: Bool = false) {
+        if usesMacDesktops && !scratchpad {
+            hyprLog(.debug, .lifecycle, "hide: '\(window.title ?? "?")' (\(window.windowID)) not parked — macOS Desktops hide workspaces")
+            return
+        }
         // native full screen lives on its own Space, and a write to it can
         // take it out of full screen (#104). it is not parked
         if isInNativeFullScreen(window) {

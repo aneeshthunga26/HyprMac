@@ -41,6 +41,12 @@ class BSPTree {
 
     var root: BSPNode = BSPNode()
 
+    /// How the tree turns into frames. Dwindle reads the splits; every other
+    /// layout reads only the window order (left to right), and the tree is
+    /// kept balanced so its depth stays within the monitor's split limit.
+    /// `TilingEngine` stamps it from the workspace before each pass.
+    var arrangement: TileArrangement = .dwindle
+
     /// The rect the tree was last laid out in. The automatic pins were
     /// chosen for a rect of its orientation, so a pass in one of the other
     /// orientation drops them. nil until the first pass.
@@ -90,6 +96,7 @@ class BSPTree {
         let tree = BSPTree()
         tree.root = clone(root, parent: nil)
         tree.lastLayoutRect = lastLayoutRect
+        tree.arrangement = arrangement
         return tree
     }
 
@@ -98,6 +105,7 @@ class BSPTree {
     func adopt(_ other: BSPTree) {
         root = other.root
         lastLayoutRect = other.lastLayoutRect
+        arrangement = other.arrangement
     }
 
     func candidateTree(draggedID: CGWindowID, targetID: CGWindowID,
@@ -106,6 +114,10 @@ class BSPTree {
               let dragged = allWindows.first(where: { $0.windowID == draggedID }),
               allWindows.contains(where: { $0.windowID == targetID }) else { return nil }
         let originalIDs = allWindows.map(\.windowID)
+        guard arrangement.layout.isTreeDriven else {
+            return orderedCandidate(placing: dragged, beside: targetID, edge: edge,
+                                    from: allWindows.filter { $0.windowID != draggedID }, maxDepth: maxDepth)
+        }
         let candidate = deepClone()
         candidate.remove(dragged)
         guard let targetWindow = candidate.allWindows.first(where: { $0.windowID == targetID }),
@@ -144,6 +156,10 @@ class BSPTree {
         let originalIDs = allWindows.map(\.windowID)
         guard !originalIDs.contains(window.windowID),
               let targetWindow = allWindows.first(where: { $0.windowID == targetID }) else { return nil }
+        guard arrangement.layout.isTreeDriven else {
+            return orderedCandidate(placing: window, beside: targetID, edge: edge,
+                                    from: allWindows, maxDepth: maxDepth)
+        }
         let candidate = deepClone()
         guard let target = candidate.root.find(targetWindow), target.isLeaf,
               target.depth < maxDepth else { return nil }
@@ -157,11 +173,30 @@ class BSPTree {
         return candidate
     }
 
+    /// An order-driven drop: `window` goes just before the target (left or
+    /// top edge) or just after it (right or bottom), and the tree is rebuilt
+    /// balanced in that order. nil when the target is missing or the count
+    /// passes the split budget.
+    private func orderedCandidate(placing window: HyprWindow, beside targetID: CGWindowID,
+                                  edge: BSPTargetEdge, from others: [HyprWindow],
+                                  maxDepth: Int) -> BSPTree? {
+        guard let index = others.firstIndex(where: { $0.windowID == targetID }),
+              Self.balancedDepth(forCount: others.count + 1) <= maxDepth else { return nil }
+        var order = others
+        order.insert(window, at: edge == .left || edge == .top ? index : index + 1)
+        let candidate = BSPTree()
+        candidate.arrangement = arrangement
+        candidate.lastLayoutRect = lastLayoutRect
+        candidate.root = Self.balancedNode(order, parent: nil)
+        return candidate
+    }
+
     /// A tree holding only `window` at its root, for a window arriving on a
     /// workspace with no tiles. nil when this tree has any.
     func candidateTree(rootedAt window: HyprWindow) -> BSPTree? {
         guard allWindows.isEmpty else { return nil }
         let candidate = BSPTree()
+        candidate.arrangement = arrangement
         candidate.root.window = window
         return candidate
     }
@@ -413,6 +448,7 @@ class BSPTree {
     /// from rect aspect ratio. Sets `splitOverride` so the choice survives
     /// retiles. No-op if `window` is the root (no parent to flip).
     func toggleSplit(for window: HyprWindow, in rect: CGRect, gap: CGFloat, padding: CGFloat) {
+        guard arrangement.layout.isTreeDriven else { return }
         guard let leaf = root.find(window), let parent = leaf.parent else { return }
 
         // figure out what direction this parent would normally use
@@ -472,7 +508,37 @@ class BSPTree {
     /// re-running the full layout pass.
     func rectForNode(_ target: BSPNode, in rect: CGRect, gap: CGFloat, padding: CGFloat) -> CGRect? {
         let padded = rect.insetBy(dx: padding, dy: padding)
+        guard arrangement.layout.isTreeDriven else { return orderedRect(for: target, in: padded, gap: gap) }
         return rectForNodeHelper(node: root, target: target, rect: padded, gap: gap)
+    }
+
+    /// An order-driven layout's rect for `target`: a leaf's own slot, or the
+    /// union of the slots under an internal node. nil when `target` is not in
+    /// this tree.
+    private func orderedRect(for target: BSPNode, in padded: CGRect, gap: CGFloat) -> CGRect? {
+        // window leaves left to right: the order `allWindows` and `layout` use
+        let leaves = Array(root.allLeavesRightToLeft().reversed())
+        let rects = orderedRects(count: leaves.count, in: padded, gap: gap)
+        var result: CGRect?
+        for (leaf, rect) in zip(leaves, rects) where Self.node(leaf, isWithin: target) {
+            result = result.map { $0.union(rect) } ?? rect
+        }
+        return result
+    }
+
+    private static func node(_ node: BSPNode, isWithin ancestor: BSPNode) -> Bool {
+        var current: BSPNode? = node
+        while let candidate = current {
+            if candidate === ancestor { return true }
+            current = candidate.parent
+        }
+        return false
+    }
+
+    private func orderedRects(count: Int, in padded: CGRect, gap: CGFloat) -> [CGRect] {
+        TilingLayoutGeometry.rects(arrangement.layout, count: count, in: padded, gap: gap,
+                                   masterFraction: arrangement.masterFraction,
+                                   masterCount: arrangement.masterCount)
     }
 
     private func rectForNodeHelper(node: BSPNode, target: BSPNode, rect: CGRect, gap: CGFloat) -> CGRect? {
@@ -528,6 +594,9 @@ class BSPTree {
     func adjustForMinSizes(_ conflicts: [(window: HyprWindow, actual: CGSize)],
                            in rect: CGRect, gap: CGFloat, padding: CGFloat,
                            givingWayOnUserSet: Bool = false) {
+        // an order-driven layout has no ratio to give: its frames come from
+        // the count alone, so the verified pass refuses and rolls back
+        guard arrangement.layout.isTreeDriven else { return }
         let padded = rect.insetBy(dx: padding, dy: padding)
 
         for (window, actualSize) in conflicts {
@@ -608,6 +677,7 @@ class BSPTree {
     /// skipped to avoid AX writes from drag jitter.
     func applyResizeDelta(for window: HyprWindow, newFrame: CGRect,
                           in rect: CGRect, gap: CGFloat, padding: CGFloat) {
+        guard arrangement.layout.isTreeDriven else { return }
         let padded = rect.insetBy(dx: padding, dy: padding)
         guard let leaf = root.find(window) else { return }
 
@@ -665,7 +735,47 @@ class BSPTree {
     /// function — no side effects on the tree.
     func layout(in rect: CGRect, gap: CGFloat, padding: CGFloat) -> [(HyprWindow, CGRect)] {
         let padded = rect.insetBy(dx: padding, dy: padding)
+        guard arrangement.layout.isTreeDriven else {
+            let windows = allWindows
+            return Array(zip(windows, orderedRects(count: windows.count, in: padded, gap: gap)))
+        }
         return root.layout(in: padded, gap: gap)
+    }
+
+    // MARK: - order-driven layouts
+
+    /// Rebuild the tree balanced, keeping the window order. An order-driven
+    /// layout ignores the shape, so the only thing the shape still decides is
+    /// depth: balanced, `n` windows need `ceil(log2 n)` levels, the same
+    /// budget dwindle has. Every split goes back to the default ratio and
+    /// loses its pins and ratio memory, which only dwindle reads.
+    func rebalance() {
+        root = Self.balancedNode(allWindows, parent: nil)
+    }
+
+    /// `window` last in the order, then rebalanced.
+    func appendBalanced(_ window: HyprWindow) {
+        root = Self.balancedNode(allWindows + [window], parent: nil)
+    }
+
+    /// Depth a balanced tree of `count` windows needs.
+    static func balancedDepth(forCount count: Int) -> Int {
+        guard count > 1 else { return 0 }
+        return Int(ceil(log2(Double(count))))
+    }
+
+    private static func balancedNode(_ windows: [HyprWindow], parent: BSPNode?) -> BSPNode {
+        guard windows.count > 1 else {
+            let leaf = BSPNode(window: windows.first)
+            leaf.parent = parent
+            return leaf
+        }
+        let node = BSPNode()
+        node.parent = parent
+        let half = (windows.count + 1) / 2
+        node.left = balancedNode(Array(windows[..<half]), parent: node)
+        node.right = balancedNode(Array(windows[half...]), parent: node)
+        return node
     }
 
     var allWindows: [HyprWindow] {

@@ -65,6 +65,10 @@ final class WorkspaceOrchestrator {
     /// Fired once the switch has landed, with the windows moved and focus
     /// settled. State that has to reflect the finished switch lives here.
     var onDidSwitch: (_ workspace: Int, _ screen: NSScreen) -> Void = { _, _ in }
+    /// macOS Desktops mode turned a request down: no Desktop for the
+    /// workspace, its shortcut is off, or a move HyprMac can't make. The
+    /// owner shows `message` on `screen` and shakes the focused window.
+    var onDesktopsRefusal: (_ message: String, _ screen: NSScreen) -> Void = { _, _ in }
     /// Fired when a switch could not reveal a window because its app did
     /// not answer the walk: a floater with no readable handle, or a tile the
     /// pass held. Fired again when the reveal retry gives up. The poll's
@@ -149,6 +153,10 @@ final class WorkspaceOrchestrator {
     /// tile. Destination geometry and source parking are verified before any
     /// workspace ownership changes.
     func moveToNextEmptyWorkspace() {
+        if workspaceManager.usesMacDesktops {
+            refuseDesktopMove("moveToNextEmptyWorkspace")
+            return
+        }
         guard let focused = actualFocusedWindow(),
               let cached = stateCache.cachedWindows[focused.windowID],
               cached.ownerPID == focused.ownerPID,
@@ -384,6 +392,11 @@ final class WorkspaceOrchestrator {
 
         let currentScreen = screenUnderCursor()
 
+        // macOS Desktops: macOS shows the Desktop and its windows. only a
+        // workspace already on screen goes on below, for its focus
+        if workspaceManager.usesMacDesktops,
+           !switchMacDesktop(number, cursorScreen: currentScreen) { return }
+
         // announce the switch before the AX sweep below. homeScreenForWorkspace
         // is a pure function of the workspace and the live screen layout, so
         // the destination screen is already settled here, and it is the same
@@ -406,8 +419,10 @@ final class WorkspaceOrchestrator {
         if result.alreadyVisible {
             // workspace is showing on result.screen — just focus it
             let visibleWindows = allWindows.filter { result.toShow.contains($0.windowID) }
+            let remembered = workspaceManager.rememberedFocus(on: number)
             if let best = visibleWindows.first(where: { $0.windowID == preferredWindowID })
                 ?? visibleWindows.first(where: { $0.windowID == maximizedHere })
+                ?? visibleWindows.first(where: { $0.windowID == remembered })
                 ?? visibleWindows.first(where: { !stateCache.floatingWindowIDs.contains($0.windowID) })
                 ?? visibleWindows.first {
                 best.focus()
@@ -494,8 +509,11 @@ final class WorkspaceOrchestrator {
         let newWorkspaceWindows = allWindows.filter { result.toShow.contains($0.windowID) }
         let preferred = newWorkspaceWindows.first { $0.windowID == preferredWindowID }
         let maximized = newWorkspaceWindows.first { $0.windowID == maximizedHere }
+        // the window focused here last: in monocle it comes back on top
+        let remembered = workspaceManager.rememberedFocus(on: number)
+            .flatMap { id in newWorkspaceWindows.first { $0.windowID == id } }
         let tiled = newWorkspaceWindows.first { !stateCache.floatingWindowIDs.contains($0.windowID) }
-        if let best = preferred ?? maximized ?? tiled ?? newWorkspaceWindows.first {
+        if let best = preferred ?? maximized ?? remembered ?? tiled ?? newWorkspaceWindows.first {
             best.focus()
             warp(toSwitchPick: best, preferredWindowID: preferredWindowID,
                  placedFrame: preferredFrame, workspace: number, screen: result.screen,
@@ -525,6 +543,42 @@ final class WorkspaceOrchestrator {
     }
 
     static let slowSwitchMS = 250
+
+    /// The Desktops-mode switch: post "Switch to Desktop N" for the
+    /// workspace's Desktop. The Space change notification then tells
+    /// `WindowManager`, which adopts the shown workspace and tiles it.
+    /// Returns true only when the workspace already shows, so the caller
+    /// focuses it as for any visible workspace.
+    private func switchMacDesktop(_ number: Int, cursorScreen: NSScreen) -> Bool {
+        workspaceManager.syncWithMacDesktops()
+        let home = workspaceManager.homeScreenForWorkspace(number) ?? cursorScreen
+        if let shown = workspaceManager.screenForWorkspace(number),
+           workspaceManager.screenID(for: shown) == workspaceManager.screenID(for: home) {
+            return true
+        }
+        guard let desktop = workspaceManager.desktopMap.desktops[number] else {
+            hyprLog(.notice, .workspace, "desktops: ws\(number) has no Desktop on \(home.localizedName)")
+            onDesktopsRefusal("\(UserConfig.workspaceDisplayName(number, names: UserConfig.shared.workspaceNames)) has no Desktop."
+                              + " Add Desktops in Mission Control.", home)
+            return false
+        }
+        guard let shortcut = DesktopShortcut.parse(DesktopShortcut.currentHotkeys(), desktop: desktop.number) else {
+            hyprLog(.notice, .workspace, "desktops: Switch to Desktop \(desktop.number) is off — ws\(number) not shown")
+            onDesktopsRefusal("Turn on “Switch to Desktop \(desktop.number)” in Keyboard Shortcuts → Mission Control.", home)
+            return false
+        }
+        onWillSwitch(number, home)
+        hyprLog(.notice, .workspace, "desktops: ws\(number) → Desktop \(desktop.number) on \(home.localizedName)")
+        shortcut.post()
+        return false
+    }
+
+    /// A move HyprMac can't make with macOS Desktops: only Mission Control
+    /// puts a window on a Desktop that isn't showing.
+    private func refuseDesktopMove(_ what: String) {
+        hyprLog(.notice, .workspace, "desktops: \(what) refused — the destination is a hidden Desktop")
+        onDesktopsRefusal("Drag windows to another Desktop in Mission Control.", screenUnderCursor())
+    }
 
     /// Closed while its app keeps running. It keeps its workspace (and a
     /// floater parked when it closed keeps its saved frame), but its app
@@ -744,6 +798,12 @@ final class WorkspaceOrchestrator {
             return
         }
         guard let focused = currentFocusedWindow() else { return }
+        // macOS Desktops: a workspace on another display can still take it
+        // (that is a monitor move); a hidden one is another Desktop
+        if workspaceManager.usesMacDesktops, !workspaceManager.isWorkspaceVisible(number) {
+            refuseDesktopMove("moveToWorkspace(\(number))")
+            return
+        }
         // hold polls off for the duration of the transition. Tahoe AX
         // writes lag, so a poll mid-transition reads the moved window
         // at its OLD pre-hide tile rect and drift detection

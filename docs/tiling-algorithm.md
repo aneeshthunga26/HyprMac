@@ -79,6 +79,39 @@ give back (that one is restored as a user pin), and
 dropped when the tree's screen turns to the other orientation, by
 migration or in place.
 
+## Layouts
+
+Each regular workspace shows one layout (`TilingLayout`). Dwindle is the BSP
+tree described below. The others (awesome's tile family, fair, spiral,
+columns, rows, centered master, corner, monocle) are order-driven: the tree
+still holds membership and order, and `BSPTree.layout` maps the windows, left
+to right, onto the rects `TilingLayoutGeometry` gives for that count. The
+first window is the master.
+
+- `TilingEngine.arrangementSource` names each workspace's `TileArrangement`
+  (layout, master fraction, master count). Every pass stamps the tree from it
+  (`stamp(_:for:)`), so clones and candidates carry it. The scratchpad layer
+  is always dwindle.
+- Entering an order-driven layout rebalances the tree, and every membership
+  change in one rebalances it again, so depth stays `ceil(log2 n)`: the same
+  `2^maxDepth` window budget dwindle has. Ratio memory, split pins, the
+  min-size ratio fudge and togglesplit do nothing there.
+- The fit check (`LayoutEngine.orderedPlacement`) appends: a newcomer fits
+  when one more window stays inside the budget and every known minimum fits
+  its slot at the new count. The verified pass refuses a layout a window
+  will not shrink into and rolls back as for dwindle.
+- A layout change (`TilingEngine.relayout`) re-stamps and retiles the visible
+  tree; a refusal puts the old arrangement and shape back, and the caller puts
+  its record back and shakes. A hidden workspace is stamped and takes the
+  layout when revealed.
+- The keyboard resize moves the master boundary in the master layouts
+  (`steppedMasterFraction`), per workspace. A drop reorders (before the
+  target on its left or top edge, after it otherwise). In monocle the focus
+  and swap arrows step through the order.
+- Monocle stacks every window on one frame. `FrameSizingAttempt.validateFrames`
+  skips the pairwise overlap and gap checks for two targets with one frame;
+  targets that only partly overlap are still refused.
+
 ## Tree shape
 
 One `BSPTree` per `(workspace, screen)` pair, owned by

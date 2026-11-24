@@ -165,6 +165,31 @@ class UserConfig: ObservableObject {
         didSet { persistRuntimeChange() }
     }
 
+    // layouts. every workspace without its own list cycles through
+    // `enabledLayouts` and starts in `defaultLayout`. a change re-lays out
+    // the visible workspaces, so these go through the runtime route
+    @Published var enabledLayouts: [TilingLayout] {
+        didSet { persistRuntimeChange() }
+    }
+    @Published var defaultLayout: TilingLayout {
+        didSet { persistRuntimeChange() }
+    }
+    // keyed "1"…"10": a workspace's own layout list and starting layout
+    @Published var workspaceLayouts: [String: WorkspaceLayoutOverride] {
+        didSet { persistRuntimeChange() }
+    }
+    // share of the screen the master takes in the master layouts. the
+    // keyboard resize moves it per workspace (WorkspaceLayoutState)
+    @Published var layoutMasterFraction: CGFloat {
+        didSet { persistRuntimeChange() }
+    }
+    @Published var layoutMasterCount: Int {
+        didSet { persistRuntimeChange() }
+    }
+    @Published var showLayoutInMenuBar: Bool {
+        didSet { persistRuntimeChange() }
+    }
+
     // restore the saved layout for this display setup at launch. saved to
     // config.json; read once at startup, so nothing live needs re-applying
     @Published var restoreLayoutOnLaunch: Bool {
@@ -220,6 +245,12 @@ class UserConfig: ObservableObject {
     // so turning it on here doesn't turn it on for every synced Mac
     @Published var externalControlEnabled: Bool {
         didSet { guard !isReloading else { return }; save() }
+    }
+    // workspaces are this Mac's Mission Control Desktops instead of HyprMac's
+    // own. per machine, in monitor-config.json. turning it on or off
+    // restarts tiling (WindowManager.desktopsModeChanged)
+    @Published var useMacDesktops: Bool {
+        didSet { persistRuntimeChange() }
     }
 
     // iCloud sync state — stored in UserDefaults, not config.json
@@ -334,6 +365,7 @@ class UserConfig: ObservableObject {
         self.statusExportEnabled = monitorConfig?.statusExportEnabled ?? false
         self.statusHookCommand = monitorConfig?.statusHookCommand
         self.externalControlEnabled = monitorConfig?.externalControlEnabled ?? false
+        self.useMacDesktops = monitorConfig?.useMacDesktops ?? false
 
         if let saved = savedConfig {
             self.keybinds = Self.mergeNewDefaults(saved: saved.keybinds,
@@ -372,6 +404,14 @@ class UserConfig: ObservableObject {
             self.floatingRules = saved.floatingRules ?? []
             self.overlayAccentHex = saved.overlayAccentHex
             self.workspaceNames = saved.workspaceNames ?? [:]
+            self.enabledLayouts = Self.resolveEnabledLayouts(saved.enabledLayouts)
+            self.defaultLayout = saved.defaultLayout ?? UserConfigDefaults.defaultLayout
+            self.workspaceLayouts = saved.workspaceLayouts ?? [:]
+            self.layoutMasterFraction = TileArrangement.clampedFraction(
+                saved.layoutMasterFraction ?? UserConfigDefaults.layoutMasterFraction)
+            self.layoutMasterCount = TileArrangement.clampedCount(
+                saved.layoutMasterCount ?? UserConfigDefaults.layoutMasterCount)
+            self.showLayoutInMenuBar = saved.showLayoutInMenuBar ?? UserConfigDefaults.showLayoutInMenuBar
         } else {
             self.keybinds = Keybind.defaults
             self.gapSize = UserConfigDefaults.gapSize
@@ -410,6 +450,12 @@ class UserConfig: ObservableObject {
             self.floatingRules = []
             self.overlayAccentHex = nil
             self.workspaceNames = [:]
+            self.enabledLayouts = UserConfigDefaults.enabledLayouts
+            self.defaultLayout = UserConfigDefaults.defaultLayout
+            self.workspaceLayouts = [:]
+            self.layoutMasterFraction = UserConfigDefaults.layoutMasterFraction
+            self.layoutMasterCount = UserConfigDefaults.layoutMasterCount
+            self.showLayoutInMenuBar = UserConfigDefaults.showLayoutInMenuBar
         }
 
         // monitor settings: prefer the local file; fall back to (and migrate
@@ -471,6 +517,12 @@ class UserConfig: ObservableObject {
         return merged
     }
 
+    // nil or a list with nothing usable is the shipped list
+    static func resolveEnabledLayouts(_ saved: [TilingLayout]?) -> [TilingLayout] {
+        let normalized = LayoutCycle.normalized(saved ?? [])
+        return normalized.isEmpty ? UserConfigDefaults.enabledLayouts : normalized
+    }
+
     static let defaultExcludedBundleIDs: [String] = [
         "com.apple.FaceTime",
         "com.apple.systempreferences",
@@ -507,7 +559,8 @@ class UserConfig: ObservableObject {
             // off and empty write no key, so a machine that never opts in is unchanged
             statusExportEnabled: statusExportEnabled ? true : nil,
             statusHookCommand: statusHookCommand?.isEmpty == false ? statusHookCommand : nil,
-            externalControlEnabled: externalControlEnabled ? true : nil)
+            externalControlEnabled: externalControlEnabled ? true : nil,
+            useMacDesktops: useMacDesktops ? true : nil)
     }
 
     private func persistRuntimeChange() {
@@ -554,7 +607,17 @@ class UserConfig: ObservableObject {
             keepCursorOnWorkspaceSwitch: keepCursorOnWorkspaceSwitch,
             animateFocusIndicator: animateFocusIndicator,
             focusBorderFlash: focusBorderFlash,
-            doubleTapHyprTogglesCapsLock: doubleTapHyprTogglesCapsLock)
+            doubleTapHyprTogglesCapsLock: doubleTapHyprTogglesCapsLock,
+            // the shipped values write no key, so a config that never
+            // touches layouts is saved as before
+            enabledLayouts: enabledLayouts == UserConfigDefaults.enabledLayouts ? nil : enabledLayouts,
+            defaultLayout: defaultLayout == UserConfigDefaults.defaultLayout ? nil : defaultLayout,
+            workspaceLayouts: workspaceLayouts.isEmpty ? nil : workspaceLayouts,
+            layoutMasterFraction: layoutMasterFraction == UserConfigDefaults.layoutMasterFraction
+                ? nil : layoutMasterFraction,
+            layoutMasterCount: layoutMasterCount == UserConfigDefaults.layoutMasterCount ? nil : layoutMasterCount,
+            showLayoutInMenuBar: showLayoutInMenuBar == UserConfigDefaults.showLayoutInMenuBar
+                ? nil : showLayoutInMenuBar)
     }
 
     // one update: one save and one runtime signal, like resetAppearanceToDefaults.
@@ -602,9 +665,16 @@ class UserConfig: ObservableObject {
         windowRules = []
         floatingRules = []
         workspaceNames = [:]
+        enabledLayouts = UserConfigDefaults.enabledLayouts
+        defaultLayout = UserConfigDefaults.defaultLayout
+        workspaceLayouts = [:]
+        layoutMasterFraction = UserConfigDefaults.layoutMasterFraction
+        layoutMasterCount = UserConfigDefaults.layoutMasterCount
+        showLayoutInMenuBar = UserConfigDefaults.showLayoutInMenuBar
         statusExportEnabled = false
         statusHookCommand = nil
         externalControlEnabled = false
+        useMacDesktops = false
         isReloading = false
         save()
         didApplyRuntimeChange.send()
@@ -671,8 +741,15 @@ class UserConfig: ObservableObject {
             outerPadding = UserConfigDefaults.outerPadding
             excludedBundleIDs = Set(Self.defaultExcludedBundleIDs)
             floatingRules = []
+            enabledLayouts = UserConfigDefaults.enabledLayouts
+            defaultLayout = UserConfigDefaults.defaultLayout
+            workspaceLayouts = [:]
+            layoutMasterFraction = UserConfigDefaults.layoutMasterFraction
+            layoutMasterCount = UserConfigDefaults.layoutMasterCount
+            showLayoutInMenuBar = UserConfigDefaults.showLayoutInMenuBar
         case .workspaces:
             workspaceNames = [:]
+            useMacDesktops = false
             windowRules = []
             scratchpadTileByDefault = UserConfigDefaults.scratchpadTileByDefault
             scratchpadRegionInset = UserConfigDefaults.scratchpadRegionInset
@@ -782,6 +859,14 @@ class UserConfig: ObservableObject {
         floatingRules = saved.floatingRules ?? []
         overlayAccentHex = saved.overlayAccentHex
         workspaceNames = saved.workspaceNames ?? [:]
+        enabledLayouts = Self.resolveEnabledLayouts(saved.enabledLayouts)
+        defaultLayout = saved.defaultLayout ?? UserConfigDefaults.defaultLayout
+        workspaceLayouts = saved.workspaceLayouts ?? [:]
+        layoutMasterFraction = TileArrangement.clampedFraction(
+            saved.layoutMasterFraction ?? UserConfigDefaults.layoutMasterFraction)
+        layoutMasterCount = TileArrangement.clampedCount(
+            saved.layoutMasterCount ?? UserConfigDefaults.layoutMasterCount)
+        showLayoutInMenuBar = saved.showLayoutInMenuBar ?? UserConfigDefaults.showLayoutInMenuBar
 
         // monitor settings come from the local file, not the synced config
         if let mc = store.loadSavedMonitorConfig() {
@@ -803,6 +888,7 @@ class UserConfig: ObservableObject {
         statusExportEnabled = mc.statusExportEnabled ?? false
         statusHookCommand = mc.statusHookCommand
         externalControlEnabled = mc.externalControlEnabled ?? false
+        useMacDesktops = mc.useMacDesktops ?? false
     }
 }
 
@@ -895,5 +981,44 @@ extension UserConfig {
                                                        perSet: workspaceMonitorsPerDisplaySet,
                                                        fallback: workspaceMonitors) else { return }
         workspaceMonitorsPerDisplaySet = next
+    }
+}
+
+// MARK: - layouts
+
+extension UserConfig {
+    /// The layouts the cycle key steps through on `workspace`.
+    func enabledLayouts(forWorkspace workspace: Int) -> [TilingLayout] {
+        LayoutCycle.enabled(forWorkspace: workspace, global: enabledLayouts, overrides: workspaceLayouts)
+    }
+
+    /// The layout `workspace` shows now.
+    func currentLayout(forWorkspace workspace: Int,
+                       state: WorkspaceLayoutState = .shared) -> TilingLayout {
+        LayoutCycle.current(forWorkspace: workspace, active: state.active[workspace],
+                            global: enabledLayouts, globalDefault: defaultLayout,
+                            overrides: workspaceLayouts)
+    }
+
+    /// What the tiling engine lays `workspace` out with.
+    func arrangement(forWorkspace workspace: Int,
+                     state: WorkspaceLayoutState = .shared) -> TileArrangement {
+        TileArrangement(layout: currentLayout(forWorkspace: workspace, state: state),
+                        masterFraction: state.masterFractions[workspace] ?? layoutMasterFraction,
+                        masterCount: layoutMasterCount)
+    }
+
+    /// A Settings edit of one workspace's list. nil goes back to the global
+    /// list.
+    func setWorkspaceLayoutOverride(_ override: WorkspaceLayoutOverride?, forWorkspace workspace: Int) {
+        var next = workspaceLayouts
+        if let override, !override.enabled.isEmpty {
+            next[String(workspace)] = WorkspaceLayoutOverride(enabled: LayoutCycle.normalized(override.enabled),
+                                                              defaultLayout: override.defaultLayout)
+        } else {
+            next.removeValue(forKey: String(workspace))
+        }
+        guard next != workspaceLayouts else { return }
+        workspaceLayouts = next
     }
 }

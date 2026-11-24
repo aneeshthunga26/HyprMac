@@ -52,6 +52,7 @@ While a display transition is pending, a workspace action, `restoreLayout` and
 | `toggleTiling` | pause or resume tiling |
 | `restoreLayout` | restore the saved layout |
 | `retileAll` | retile every workspace |
+| `cycleLayout?delta=1` | next layout on the focused workspace (`-1` for previous) |
 
 Each link starts with `hyprmac://action/`. Names and `dir` values ignore
 case. Extra query keys are ignored, so a tool can tag its links. A wrong

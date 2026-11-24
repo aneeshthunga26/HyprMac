@@ -243,7 +243,8 @@ final class MaximizePolicyTests: XCTestCase {
     func testActionsThatReworkTheTreeEndIt() {
         for action: Action in [.swapDirection(.left), .resizeDirection(.left), .toggleSplit, .toggleFloating,
                                .moveToWorkspace(2), .moveToWorkspaceAndFollow(2), .moveWindowToMonitor(.left),
-                               .moveToNextEmptyWorkspace, .moveToScratchpad, .restoreLayout, .retileAll] {
+                               .moveToNextEmptyWorkspace, .moveToScratchpad, .restoreLayout, .retileAll,
+                               .cycleLayout(1)] {
             XCTAssertTrue(ActionPolicy.endsMaximize(action), "\(action)")
         }
     }

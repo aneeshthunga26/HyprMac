@@ -76,6 +76,9 @@ enum Action: Equatable {
     /// once, always for its app or for windows with a title like its own,
     /// or forget the rule that covers it.
     case showWindowRules
+    /// Step the focused workspace through the layouts enabled for it.
+    /// `+1` goes to the next, `-1` to the previous, wrapping.
+    case cycleLayout(Int)
 }
 
 // MARK: - Codable
@@ -123,6 +126,7 @@ extension Action: Codable {
         case restoreLayout
         case retileAll
         case showWindowRules
+        case cycleLayout
     }
 
     /// Accepted-but-not-emitted aliases. Lets a hand-edited config
@@ -201,6 +205,8 @@ extension Action: Codable {
         case .restoreLayout: self = .restoreLayout
         case .retileAll:     self = .retileAll
         case .showWindowRules: self = .showWindowRules
+        case .cycleLayout:
+            self = .cycleLayout(try inner.decode(Int.self, forKey: ._0))
         }
     }
 
@@ -282,6 +288,9 @@ extension Action: Codable {
             _ = c.nestedContainer(keyedBy: PayloadKey.self, forKey: .retileAll)
         case .showWindowRules:
             _ = c.nestedContainer(keyedBy: PayloadKey.self, forKey: .showWindowRules)
+        case .cycleLayout(let n):
+            var p = c.nestedContainer(keyedBy: PayloadKey.self, forKey: .cycleLayout)
+            try p.encode(n, forKey: ._0)
         }
     }
 }

@@ -212,6 +212,9 @@ final class ActionDispatcher {
     var retileAll: () -> Void = {}
     // the window rules overlay on the focused window; WindowManager owns it
     var showWindowRules: () -> Void = {}
+    /// Steps `workspace`'s layout by the delta. `WindowManager` owns it: it
+    /// knows the layout state, the menu bar and the HUD.
+    var changeLayout: (_ workspace: Int, _ screen: NSScreen, _ delta: Int) -> Void = { _, _, _ in }
     // switch to a pinned new window's workspace and focus it
     var followPinnedWindow: (CGWindowID, Int) -> Void = { _, _ in }
     // keep drift off a window sent to the cursor's monitor, and end that
@@ -333,6 +336,12 @@ final class ActionDispatcher {
         let pinPlaced = Set(pinnedReopens.map(\.windowID)).union(cursorMoves.keys)
         for drift in changes.screenDrift where !pinPlaced.contains(drift.windowID) {
             workspaceManager.moveWindow(drift.windowID, toWorkspace: drift.toWorkspace)
+        }
+        // macOS Desktops: the workspace a window drifted from is usually a
+        // hidden Desktop, which no retile below visits, so its tree would
+        // keep the window as well
+        if workspaceManager.usesMacDesktops, !changes.screenDrift.isEmpty {
+            tilingEngine.dropMisassignedMembers(workspaceFor: workspaceManager.workspaceFor)
         }
 
         var retileResults: [TilingEngine.AdmissionResult] = []
@@ -691,6 +700,8 @@ final class ActionDispatcher {
             retileAll()
         case .showWindowRules:
             showWindowRules()
+        case .cycleLayout(let delta):
+            cycleLayout(delta)
         }
 
         // let the Tour try-it hint (and any future observers) react. cheap —
@@ -731,6 +742,7 @@ final class ActionDispatcher {
         case .restoreLayout:       return "restoreLayout"
         case .retileAll:           return "retileAll"
         case .showWindowRules:     return "showWindowRules"
+        case .cycleLayout:         return "cycleLayout"
         }
     }
 
@@ -740,8 +752,15 @@ final class ActionDispatcher {
     func pinnedWorkspace(for window: HyprWindow) -> Int? {
         let bundleID = window.bundleID
             ?? NSRunningApplication(processIdentifier: window.ownerPID)?.bundleIdentifier
-        return Self.pinnedWorkspace(bundleID: bundleID, isQuickLookPanel: window.isQuickLookPanel,
-                                    rules: config.windowRules)
+        let pinned = Self.pinnedWorkspace(bundleID: bundleID, isQuickLookPanel: window.isQuickLookPanel,
+                                          rules: config.windowRules)
+        // macOS Desktops: HyprMac cannot put a window on a Desktop that isn't
+        // showing, so a pin holds only while its workspace is on a screen
+        if workspaceManager.usesMacDesktops, let pinned, pinned != ScratchpadController.workspace,
+           !workspaceManager.isWorkspaceVisible(pinned) {
+            return nil
+        }
+        return pinned
     }
 
     func isPinnedToScratchpad(_ window: HyprWindow) -> Bool {
@@ -1000,10 +1019,12 @@ final class ActionDispatcher {
     private func focusInDirection(_ direction: Direction) {
         guard let focused = currentFocusedWindow() else { return }
         let layer = scratchpadLayer()
-        // only consider windows on visible workspaces — hidden corner windows must be excluded
+        // only consider windows on visible workspaces — hidden corner windows
+        // must be excluded. floaters are candidates too, so the arrows reach
+        // every window on the workspace; a Quick Look preview is not one
         let windows = accessibility.getAllWindows().filter {
             (layer?.members.contains($0.windowID) ?? workspaceManager.isWindowVisible($0.windowID))
-                && !stateCache.floatingWindowIDs.contains($0.windowID)
+                && !$0.isQuickLookPanel
         }
 
         // use BSP-computed intended rects so a crammed (oversized) source
@@ -1017,14 +1038,23 @@ final class ActionDispatcher {
         }
         // diag: source rect (intended vs live) + physical screen. see directional-focus bug.
         hyprLog(.debug, .orchestration, "focus \(direction): src '\(focused.title ?? "?")' (\(focused.windowID)) intended=\(intended[focused.windowID].map { "\($0)" } ?? "nil") live=\(focused.frame.map { "\($0)" } ?? "nil") screen=\(displayManager.screen(for: focused)?.localizedName ?? "?")")
-        if let target = accessibility.windowInDirection(direction, from: focused, among: windows, frameFor: frameFor) {
+        // monocle stacks every tile on one frame, so there is no neighbour in
+        // any direction: the arrows step through the window order instead
+        if let target = monocleNeighbour(of: focused, direction: direction, among: windows)
+            ?? accessibility.windowInDirection(direction, from: focused, among: windows, frameFor: frameFor) {
             hyprLog(.debug, .orchestration, "focus \(direction): -> '\(target.title ?? "?")' (\(target.windowID)) frameFor=\(frameFor(target).map { "\($0)" } ?? "nil") live=\(target.frame.map { "\($0)" } ?? "nil") screen=\(displayManager.screen(for: target)?.localizedName ?? "?")")
             focusController.recordFocus(target.windowID, reason: "focusInDirection")
             // the indicator first: after focusWindow the app is busy
             // activating, and reading its frame then waited ~140 ms, so the
             // glide started well after a swap's
             updateFocusBorder(target)
-            focusWindow(target, "focusInDirection")
+            if stateCache.floatingWindowIDs.contains(target.windowID) {
+                // a floater comes to the front with the keyboard, as Hypr+Shift+T does
+                target.isFloating = true
+                target.focus()
+            } else {
+                focusWindow(target, "focusInDirection")
+            }
             cursorManager.warpToCenter(of: target)
         }
     }
@@ -1061,7 +1091,9 @@ final class ActionDispatcher {
         let frameFor: (HyprWindow) -> CGRect? = {
             DirectionalGeometry.frame(for: $0.windowID, intended: intended, actual: $0.frame)
         }
-        guard let target = accessibility.windowInDirection(direction, from: focused, among: windows, frameFor: frameFor) else { return }
+        guard let target = monocleNeighbour(of: focused, direction: direction, among: windows)
+                ?? accessibility.windowInDirection(direction, from: focused, among: windows, frameFor: frameFor)
+        else { return }
         guard tilingEngine.canSwapWindows(focused, target, onWorkspace: workspace, screen: screen) else {
             rejectSwap(focused, reason: "swap would violate min-size constraints")
             return
@@ -1085,6 +1117,55 @@ final class ActionDispatcher {
         if layer != nil { scratchpadLayoutChanged() }
         cursorManager.warpToCenter(of: focused)
         updatePositionCache()
+    }
+
+    /// The next (right, down) or previous (left, up) window of `window`'s
+    /// workspace when it is in monocle, wrapping: the tiles in tree order,
+    /// then the floaters among `candidates` on that workspace by id. nil in
+    /// every other layout, or with nothing else to step to.
+    private func monocleNeighbour(of window: HyprWindow, direction: Direction,
+                                  among candidates: [HyprWindow]) -> HyprWindow? {
+        guard let (workspace, screen) = tilingContext(for: window),
+              tilingEngine.liveArrangement(forWorkspace: workspace, screen: screen)?.layout == .monocle else {
+            return nil
+        }
+        let floaters = candidates
+            .filter { stateCache.floatingWindowIDs.contains($0.windowID)
+                && workspaceManager.workspaceFor($0.windowID) == workspace }
+            .map(\.windowID).sorted()
+        let order = Self.monocleOrder(tiles: tilingEngine.windowIDs(inTreeForWorkspace: workspace, screen: screen),
+                                      floaters: floaters)
+        let byID = Dictionary(candidates.map { ($0.windowID, $0) }, uniquingKeysWith: { first, _ in first })
+        let present = order.filter { byID[$0] != nil || $0 == window.windowID }
+        guard present.count > 1, let index = present.firstIndex(of: window.windowID) else { return nil }
+        let step = direction == .right || direction == .down ? 1 : -1
+        let next = present[(index + step + present.count) % present.count]
+        return byID[next]
+    }
+
+    /// The monocle cycle: tiles in tree order, then floaters, each once.
+    static func monocleOrder(tiles: [CGWindowID], floaters: [CGWindowID]) -> [CGWindowID] {
+        let tileSet = Set(tiles)
+        return tiles + floaters.filter { !tileSet.contains($0) }
+    }
+
+    /// The workspace a layout action is for: the focused tile's, else the
+    /// one on the cursor's screen. nil while the scratchpad layer is up; it
+    /// has no layouts.
+    private func layoutTarget() -> (workspace: Int, screen: NSScreen)? {
+        guard scratchpadLayer() == nil else { return nil }
+        if let focused = currentFocusedWindow(),
+           !stateCache.floatingWindowIDs.contains(focused.windowID),
+           let context = tilingContext(for: focused) {
+            return context
+        }
+        let screen = screenUnderCursor()
+        return (workspaceManager.workspaceForScreen(screen), screen)
+    }
+
+    private func cycleLayout(_ delta: Int) {
+        guard delta != 0, let (workspace, screen) = layoutTarget() else { return }
+        changeLayout(workspace, screen, delta)
     }
 
     /// The `(workspace, screen)` tree `window` tiles in: the scratchpad

@@ -916,6 +916,14 @@ struct SavedConfig: Codable {
     var animateFocusIndicator: Bool? = nil
     var focusBorderFlash: Bool? = nil
     var doubleTapHyprTogglesCapsLock: Bool? = nil
+    // layouts. nil (every older config) is the shipped list and defaults;
+    // unknown layout names a newer build wrote are dropped on decode
+    var enabledLayouts: [TilingLayout]? = nil
+    var defaultLayout: TilingLayout? = nil
+    var workspaceLayouts: [String: WorkspaceLayoutOverride]? = nil
+    var layoutMasterFraction: CGFloat? = nil
+    var layoutMasterCount: Int? = nil
+    var showLayoutInMenuBar: Bool? = nil
 }
 
 // MARK: - per-keybind decode tolerance
@@ -951,6 +959,8 @@ extension SavedConfig {
         case animateFocusIndicator
         case focusBorderFlash
         case doubleTapHyprTogglesCapsLock
+        case enabledLayouts, defaultLayout, workspaceLayouts
+        case layoutMasterFraction, layoutMasterCount, showLayoutInMenuBar
     }
 
     init(from decoder: Decoder) throws {
@@ -1026,6 +1036,32 @@ extension SavedConfig {
         self.animateFocusIndicator = Self.tolerant(c, .animateFocusIndicator)
         self.focusBorderFlash = Self.tolerant(c, .focusBorderFlash)
         self.doubleTapHyprTogglesCapsLock = Self.tolerant(c, .doubleTapHyprTogglesCapsLock)
+        self.enabledLayouts = Self.tolerantLayouts(c, .enabledLayouts)
+        let defaultLayoutName: String? = Self.tolerant(c, .defaultLayout)
+        self.defaultLayout = defaultLayoutName.flatMap(TilingLayout.init(rawValue:))
+        self.workspaceLayouts = Self.tolerantWorkspaceLayouts(c)
+        self.layoutMasterFraction = Self.tolerant(c, .layoutMasterFraction)
+        self.layoutMasterCount = Self.tolerant(c, .layoutMasterCount)
+        self.showLayoutInMenuBar = Self.tolerant(c, .showLayoutInMenuBar)
+    }
+
+    // names a newer build added are dropped, not the list. a list left with
+    // nothing it knows counts as no list, so the shipped defaults apply
+    private static func tolerantLayouts(_ c: KeyedDecodingContainer<CodingKeys>,
+                                        _ key: CodingKeys) -> [TilingLayout]? {
+        let names: [String]? = tolerant(c, key)
+        let kept = names?.compactMap(TilingLayout.init(rawValue:))
+        return kept?.isEmpty == false ? kept : nil
+    }
+
+    // keys "1"…"10" with at least one layout this build knows; anything
+    // else is dropped, like workspaceNames
+    private static func tolerantWorkspaceLayouts(_ c: KeyedDecodingContainer<CodingKeys>)
+        -> [String: WorkspaceLayoutOverride]? {
+        let valid = Set(Constants.workspaceRange.map(String.init))
+        let raw: [String: WorkspaceLayoutOverride]? = tolerant(c, .workspaceLayouts)
+        let kept = raw?.filter { valid.contains($0.key) && !$0.value.enabled.isEmpty }
+        return kept?.isEmpty == false ? kept : nil
     }
 
     // keys "1"…"10" with a non-empty name; anything else is dropped, so a
@@ -1182,6 +1218,9 @@ struct SavedMonitorConfig: Codable {
     var statusHookCommand: String? = nil
     // hyprmac://action/… links, see docs/external-control.md. per machine
     var externalControlEnabled: Bool? = nil
+    // workspaces are this Mac's Mission Control Desktops. per machine: the
+    // Desktops and their shortcuts are set up per Mac
+    var useMacDesktops: Bool? = nil
 }
 
 // per-field tolerant like SavedConfig: a hand-edited bad value costs only
@@ -1190,7 +1229,8 @@ struct SavedMonitorConfig: Codable {
 extension SavedMonitorConfig {
     private enum CodingKeys: String, CodingKey {
         case maxSplitsPerMonitor, disabledMonitors, outerPaddingPerMonitor, workspaceMonitors,
-             workspaceMonitorsPerDisplaySet, statusExportEnabled, statusHookCommand, externalControlEnabled
+             workspaceMonitorsPerDisplaySet, statusExportEnabled, statusHookCommand, externalControlEnabled,
+             useMacDesktops
     }
 
     // unreleased top-only shape from PR #51. read once, never written back
@@ -1222,7 +1262,8 @@ extension SavedMonitorConfig {
                   workspaceMonitorsPerDisplaySet: Self.tolerantDisplaySets(c),
                   statusExportEnabled: tolerant(c, .statusExportEnabled),
                   statusHookCommand: tolerant(c, .statusHookCommand),
-                  externalControlEnabled: tolerant(c, .externalControlEnabled))
+                  externalControlEnabled: tolerant(c, .externalControlEnabled),
+                  useMacDesktops: tolerant(c, .useMacDesktops))
     }
 }
 

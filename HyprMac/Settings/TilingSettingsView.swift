@@ -1,5 +1,6 @@
-// "Tiling" section of Settings: the gaps with a live preview, and the
-// float and tile rules. Also the dwindle preview Monitors shares.
+// "Tiling" section of Settings: the tiling layouts (LayoutsSettingsView), the
+// gaps with a live preview, and the float and tile rules. Also the dwindle
+// preview Monitors shares.
 
 import SwiftUI
 
@@ -9,10 +10,11 @@ struct TilingSettingsView: View {
 
     var body: some View {
         VStack(spacing: HyprSpacing.lg) {
+            LayoutsSettingsSection()
             gapsCard
             rulesCard
             SectionResetFooter(title: "Reset Tiling to defaults",
-                               message: "Sets both gaps to \(Int(UserConfigDefaults.gapSize)) px and puts the rules back to the two defaults, FaceTime and System Settings floating. Rules you added are removed; a copy of your settings is kept beside config.json.") {
+                               message: "Puts the layouts back to the shipped list with dwindle first, sets both gaps to \(Int(UserConfigDefaults.gapSize)) px and puts the rules back to the two defaults, FaceTime and System Settings floating. Rules you added are removed; a copy of your settings is kept beside config.json.") {
                 config.resetToDefaults(.tiling)
             }
         }

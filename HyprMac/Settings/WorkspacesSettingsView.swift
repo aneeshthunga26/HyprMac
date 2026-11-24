@@ -9,10 +9,11 @@ struct WorkspacesSettingsView: View {
     var body: some View {
         VStack(spacing: HyprSpacing.lg) {
             namesCard
+            MacDesktopsPanel()
             pinsCard
             scratchpadCard
             SectionResetFooter(title: "Reset Workspaces to defaults",
-                               message: "Clears workspace names and app pins and puts the scratchpad back to tiling with a 6% margin. A copy of your settings is kept beside config.json.") {
+                               message: "Clears workspace names and app pins, turns macOS Desktops off and puts the scratchpad back to tiling with a 6% margin. A copy of your settings is kept beside config.json.") {
                 config.resetToDefaults(.workspaces)
             }
         }

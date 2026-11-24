@@ -32,6 +32,7 @@ final class ActionWireKeyTests: XCTestCase {
         case .restoreLayout: "restoreLayout"
         case .retileAll: "retileAll"
         case .showWindowRules: "showWindowRules"
+        case .cycleLayout: "cycleLayout"
         }
     }
 
@@ -62,11 +63,12 @@ final class ActionWireKeyTests: XCTestCase {
         (.restoreLayout, #"{"restoreLayout":{}}"#),
         (.retileAll, #"{"retileAll":{}}"#),
         (.showWindowRules, #"{"showWindowRules":{}}"#),
+        (.cycleLayout(-1), #"{"cycleLayout":{"_0":-1}}"#),
     ]
 
     func testTableCoversEveryKeyOnce() {
         XCTAssertEqual(Set(Self.table.map { Self.wireKey($0.action) }).count, Self.table.count)
-        XCTAssertEqual(Self.table.count, 26)
+        XCTAssertEqual(Self.table.count, 27)
     }
 
     func testEveryActionEncodesToItsFrozenJSON() throws {

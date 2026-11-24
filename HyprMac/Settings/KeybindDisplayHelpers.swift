@@ -98,6 +98,8 @@ extension Keybind {
             return "rectangle.3.group"
         case .showWindowRules:
             return "slider.horizontal.3"
+        case .cycleLayout:
+            return "rectangle.3.offgrid"
         }
     }
 
@@ -140,6 +142,7 @@ extension Keybind {
         case .restoreLayout:                return "Restore Layout"
         case .retileAll:                    return "Retile All Spaces"
         case .showWindowRules:              return "Show Window Rules"
+        case .cycleLayout(let d):           return d > 0 ? "Next Layout" : "Previous Layout"
         }
     }
 

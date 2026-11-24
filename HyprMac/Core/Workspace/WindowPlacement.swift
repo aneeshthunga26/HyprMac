@@ -138,6 +138,14 @@ final class WindowPlacement {
         // floaters first: the tiled pass below can return early
         placePinnedFloaters(allWindows)
 
+        // a window's Desktop is its workspace, and HyprMac cannot move a
+        // window to another Desktop. each one tiles where it is; one that
+        // does not fit floats through the admission recovery
+        if workspaceManager.usesMacDesktops {
+            hyprLog(.notice, .lifecycle, "distribute: macOS Desktops decide the workspaces — \(tilingWids.count) window(s) stay where they are")
+            return
+        }
+
         guard !tilingWids.isEmpty else { return }
 
         let plan = startupPlacement(windowIDs: tilingWids, windows: allWindows, screens: screens)
@@ -241,6 +249,8 @@ final class WindowPlacement {
     /// left at the old corner would sit fully visible mid-screen (or on a
     /// dead coordinate) while their workspace is still hidden.
     func reparkHiddenWorkspaceWindows(_ allWindows: [HyprWindow]) {
+        // macOS hides other Desktops' windows itself
+        guard !workspaceManager.usesMacDesktops else { return }
         for w in allWindows {
             guard let ws = workspaceManager.workspaceFor(w.windowID),
                   !workspaceManager.isWorkspaceVisible(ws),
@@ -259,6 +269,9 @@ final class WindowPlacement {
     /// that is really parked just re-asserts the park. The inverse, a
     /// floater a switch could not reveal, is repaired here too.
     func repairParkedWindows(_ allWindows: [HyprWindow]) {
+        // nothing is parked: a window on screen is on the shown Desktop, and
+        // drift gives it that Desktop's workspace
+        guard !workspaceManager.usesMacDesktops else { return }
         for w in allWindows {
             guard let ws = workspaceManager.workspaceFor(w.windowID),
                   !workspaceManager.isWorkspaceVisible(ws),

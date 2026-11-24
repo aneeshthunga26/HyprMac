@@ -10,4 +10,7 @@ extension Notification.Name {
     static let hyprMacHyprKeyChanged = Notification.Name("hyprMacHyprKeyChanged")
     // the Show in Dock setting changed; AppDelegate applies the activation policy
     static let hyprMacDockIconChanged = Notification.Name("hyprMacDockIconChanged")
+    // Settings picked a workspace's layout. userInfo: "workspace" (Int) and
+    // "layout" (TilingLayout raw value). WindowManager applies it
+    static let hyprMacSetWorkspaceLayout = Notification.Name("hyprMacSetWorkspaceLayout")
 }

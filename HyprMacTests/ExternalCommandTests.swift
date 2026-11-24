@@ -61,6 +61,13 @@ final class ExternalCommandTests: XCTestCase {
         XCTAssertEqual(parse("hyprmac://action/toggleSplit?from=btt"), .action(.toggleSplit))
     }
 
+    func testCycleLayoutTakesOnlyOneStepEitherWay() {
+        XCTAssertEqual(parse("hyprmac://action/cycleLayout?delta=1"), .action(.cycleLayout(1)))
+        XCTAssertEqual(parse("hyprmac://action/cycleLayout?delta=-1"), .action(.cycleLayout(-1)))
+        XCTAssertNil(parse("hyprmac://action/cycleLayout?delta=2"))
+        XCTAssertNil(parse("hyprmac://action/cycleLayout"))
+    }
+
     // the link names are a public API: adding or renaming one fails here first
     func testLinkNamesArePinned() {
         XCTAssertEqual(ExternalCommand.actionNames, [
@@ -70,7 +77,7 @@ final class ExternalCommandTests: XCTestCase {
             "toggleFloating", "toggleSplit", "showKeybinds", "showWorkspaceOverview",
             "focusMenuBar", "focusFloating", "moveToNextEmptyWorkspace", "closeWindow",
             "toggleScratchpad", "moveToScratchpad", "toggleTiling", "restoreLayout", "retileAll",
-            "toggleMaximize",
+            "toggleMaximize", "cycleLayout",
         ])
     }
 

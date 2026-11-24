@@ -153,6 +153,10 @@ struct LayoutEngine {
                                   preferringTenant preferred: CGWindowID? = nil,
                                   noting: ((SlotRefusal) -> Void)? = nil)
         -> (leaf: BSPNode, direction: SplitDirection)? {
+        guard tree.arrangement.layout.isTreeDriven else {
+            return orderedPlacement(for: window, in: tree, maxDepth: maxDepth, rect: rect,
+                                    minimumSize: minimumSize, noting: noting)
+        }
         var leaves = tree.root.allLeavesRightToLeft()
         // the focused tile goes first in each pass. it still has to pass
         // every check below; when it does not, the walk carries on as before
@@ -214,6 +218,50 @@ struct LayoutEngine {
         return nil
     }
 
+    /// The fit check for an order-driven layout. The window joins the end of
+    /// the order, so there is no leaf to choose: it fits when one more window
+    /// stays within the monitor's split budget (`2^maxDepth`, what dwindle
+    /// holds at that depth) and every known minimum, the newcomer's
+    /// included, fits the slot the layout gives it with one more window.
+    /// Returns the last leaf, which the insert appends after.
+    private func orderedPlacement(for window: HyprWindow?,
+                                  in tree: BSPTree,
+                                  maxDepth: Int,
+                                  rect: CGRect,
+                                  minimumSize: (HyprWindow?) -> CGSize,
+                                  noting: ((SlotRefusal) -> Void)?)
+        -> (leaf: BSPNode, direction: SplitDirection)? {
+        let windows = tree.allWindows
+        let last = tree.root.allLeavesRightToLeft().first ?? tree.root
+        let incomingMinimum = minimumSize(window)
+        guard BSPTree.balancedDepth(forCount: windows.count + 1) <= maxDepth else {
+            noting?(SlotRefusal(tenantID: nil, slot: .zero, direction: .horizontal,
+                                depthExhausted: true, axis: "depth",
+                                incomingMinimum: incomingMinimum, tenantMinimum: .zero))
+            return nil
+        }
+        let padded = rect.insetBy(dx: outerPadding, dy: outerPadding)
+        let arrangement = tree.arrangement
+        let slots = TilingLayoutGeometry.rects(arrangement.layout, count: windows.count + 1, in: padded,
+                                               gap: gapSize, masterFraction: arrangement.masterFraction,
+                                               masterCount: arrangement.masterCount)
+        let slack = TilingConfig.rectComparisonSlackPx
+        let members: [HyprWindow?] = windows.map { $0 } + [window]
+        for (member, slot) in zip(members, slots) {
+            let minimum = member === window ? incomingMinimum : minimumSize(member)
+            let widthShort = minimum.width > slot.width + slack
+            let heightShort = minimum.height > slot.height + slack
+            guard widthShort || heightShort else { continue }
+            noting?(SlotRefusal(tenantID: member === window ? nil : member?.windowID,
+                                slot: slot.size, direction: .horizontal, depthExhausted: false,
+                                axis: FrameReadbackPoller.axis(width: widthShort, height: heightShort),
+                                incomingMinimum: incomingMinimum,
+                                tenantMinimum: member === window ? .zero : minimum))
+            return nil
+        }
+        return (last, .horizontal)
+    }
+
     /// Smart-insert via `fittingPlacement`. Returns false if no leaf accepts
     /// the pair; the pass then reports a refusal (see `AdmissionRecovery`).
     /// `preferringTenant` is the focused tile, tried first in each pass.
@@ -235,6 +283,14 @@ struct LayoutEngine {
                                                skippingTenants: skippingTenants,
                                                preferringTenant: preferringTenant) else {
             return false
+        }
+
+        // an order-driven layout appends and stays balanced; the leaf only
+        // said there was room
+        guard tree.arrangement.layout.isTreeDriven else {
+            tree.appendBalanced(window)
+            hyprLog(.debug, .lifecycle, "ordered insert: \(tree.arrangement.layout.rawValue) now holds \(tree.allWindows.count)")
+            return true
         }
 
         let leaf = placement.leaf

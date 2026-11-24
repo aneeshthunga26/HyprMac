@@ -17,6 +17,9 @@ final class WorkspaceStatusPresenter {
     /// moves or the pointer leaves its monitor; an empty workspace switch
     /// records no focus. Main thread.
     var lastSwitchedWorkspace: Int?
+    /// A layout cycled to with Hypr still held, not applied yet. The menu bar
+    /// shows it for its workspace until Hypr comes up.
+    var layoutPreview: (workspace: Int, layout: TilingLayout)?
 
     init(config: UserConfig,
          accessibility: AccessibilityManager,
@@ -41,9 +44,16 @@ final class WorkspaceStatusPresenter {
     /// so the menu bar grid does not show ghost occupancy.
     func occupiedWorkspaces() -> Set<Int> {
         var result = Set<Int>()
+        // macOS Desktops: a window on a hidden Desktop stays known, but one
+        // that left the shown Desktop (dragged off in Mission Control) reads
+        // as hidden with its slot reserved until its new Desktop shows. it
+        // still occupies a workspace. ghosts (closed) are not reserved
+        let hidden = workspaceManager.usesMacDesktops
+            ? stateCache.hiddenWindowIDs.subtracting(stateCache.reservedHiddenWindowIDs)
+            : stateCache.hiddenWindowIDs
         for ws in Constants.workspaceRange {
             // exclude hidden windows (minimized/closed but app still running)
-            let live = workspaceManager.windowIDs(onWorkspace: ws).subtracting(stateCache.hiddenWindowIDs)
+            let live = workspaceManager.windowIDs(onWorkspace: ws).subtracting(hidden)
             if !live.isEmpty {
                 result.insert(ws)
             }
@@ -103,7 +113,8 @@ final class WorkspaceStatusPresenter {
                             isActive: active.contains(workspace),
                             isOccupied: occupied.contains(workspace),
                             hasFloatingWindows: floating.contains(workspace))
-                    })
+                    },
+                    layout: config.currentLayout(forWorkspace: current))
             }
         let cursorID = workspaceManager.screenID(for: displayManager.screenUnderCursor())
         let visible = monitors.map(\.currentWorkspace)
@@ -120,6 +131,11 @@ final class WorkspaceStatusPresenter {
                 hasFloatingWindows: floating.contains(workspace),
                 isMaximized: maximized.contains(workspace))
         }
+        let focusedLayout = focusedIndex.map { index -> TilingLayout in
+            let workspace = visible[index]
+            if let preview = layoutPreview, preview.workspace == workspace { return preview.layout }
+            return config.currentLayout(forWorkspace: workspace)
+        }
         let scratchpadCount = scratchpad.members.count
         let scratchpadVisible = scratchpad.isVisible
 
@@ -130,6 +146,7 @@ final class WorkspaceStatusPresenter {
             if state.isFullscreen != isFullscreen { state.isFullscreen = isFullscreen }
             if state.monitors != monitors { state.monitors = monitors }
             if state.compactWorkspace != compactWorkspace { state.compactWorkspace = compactWorkspace }
+            if state.focusedLayout != focusedLayout { state.focusedLayout = focusedLayout }
             if state.scratchpadCount != scratchpadCount { state.scratchpadCount = scratchpadCount }
             if state.scratchpadVisible != scratchpadVisible { state.scratchpadVisible = scratchpadVisible }
             if !state.hasData { state.hasData = true }
@@ -225,7 +242,10 @@ final class WorkspaceStatusPresenter {
             cursorScreen: screens.isEmpty ? nil : displayManager.screenUnderCursor().localizedName,
             apps: apps,
             names: config.workspaceNames,
-            switchedTo: lastSwitchedWorkspace))
+            switchedTo: lastSwitchedWorkspace,
+            layouts: Dictionary(uniqueKeysWithValues: Constants.workspaceRange.map {
+                ($0, config.currentLayout(forWorkspace: $0))
+            })))
     }
 
     /// Log a snapshot of workspace, cache and tree state at `.notice`
